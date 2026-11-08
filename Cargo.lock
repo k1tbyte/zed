@@ -7051,6 +7051,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "git_ops"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures 0.3.34",
+ "smol",
+ "tempfile",
+ "util",
+]
+
+[[package]]
 name = "git_ui"
 version = "0.1.0"
 dependencies = [
@@ -7073,6 +7084,7 @@ dependencies = [
  "fuzzy",
  "fuzzy_nucleo",
  "git",
+ "git_ops",
  "git_ui_core",
  "gpui",
  "indoc",

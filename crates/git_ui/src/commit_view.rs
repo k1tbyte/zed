@@ -45,6 +45,7 @@ use workspace::{
     searchable::SearchableItemHandle,
 };
 
+use crate::commit_context_menu::commit_file_apply_entries;
 use crate::commit_tooltip::CommitAvatar;
 use crate::git_panel::GitPanel;
 
@@ -162,6 +163,20 @@ impl Addon for CommitDiffAddon {
             exists_at_head.then(|| file.clone())
         });
 
+        let apply_target =
+            buffer
+                .file()
+                .zip(self.commit_view.upgrade())
+                .map(|(file, commit_view)| {
+                    let commit_view = commit_view.read(cx);
+                    (
+                        commit_view.commit.sha.clone(),
+                        RepoPath::from_rel_path(file.path()),
+                        commit_view.repository.downgrade(),
+                        commit_view.workspace.clone(),
+                    )
+                });
+
         menu.when_some(file_to_open, |menu, file| {
             let commit_view = self.commit_view.clone();
             menu.entry(
@@ -174,6 +189,12 @@ impl Addon for CommitDiffAddon {
                 },
             )
         })
+        .when_some(
+            apply_target,
+            |menu, (sha, file_path, repository, workspace)| {
+                commit_file_apply_entries(menu, sha, file_path, repository, workspace)
+            },
+        )
     }
 }
 

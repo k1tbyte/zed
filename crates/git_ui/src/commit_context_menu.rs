@@ -1,12 +1,14 @@
 use crate::{commit_view::CommitView, create_tag_at_commit};
-use git::Oid;
+use editor::file_path_menu_entries;
+use git::{Oid, repository::RepoPath};
+use git_ops::Direction;
 use gpui::{Action, ClipboardItem, Entity, FocusHandle, SharedString, WeakEntity, Window, actions};
 use project::{GIT_COMMAND_TASK_TAG, git_store::Repository};
 
 use task::{TaskContext, TaskVariables, VariableName};
 use ui::{Color, ContextMenu, ContextMenuEntry, IconName, IconPosition, prelude::*};
 use util::ResultExt as _;
-use workspace::Workspace;
+use workspace::{Workspace, notifications::NotifyTaskExt as _};
 
 actions!(
     git_graph,
@@ -191,6 +193,90 @@ pub(crate) fn commit_context_menu(
 
                 menu
             })
+    })
+}
+
+/// Same entries the commit view shows for a file header, for surfaces without an editor.
+pub(crate) fn commit_file_context_menu(
+    menu: ContextMenu,
+    sha: SharedString,
+    file_path: RepoPath,
+    repository: Entity<Repository>,
+    workspace: WeakEntity<Workspace>,
+    cx: &App,
+) -> ContextMenu {
+    let project = workspace
+        .upgrade()
+        .map(|workspace| workspace.read(cx).project().clone());
+    let project_path = repository
+        .read(cx)
+        .repo_path_to_project_path(&file_path, cx);
+    let menu = match project.zip(project_path) {
+        Some((project, project_path)) => {
+            let menu = file_path_menu_entries(
+                menu,
+                &project,
+                project_path.worktree_id,
+                &project_path.path,
+                project.read(cx).path_style(cx),
+                cx,
+            );
+            let exists_at_head = project.read(cx).entry_for_path(&project_path, cx).is_some();
+            menu.when(exists_at_head, |menu| {
+                let workspace = workspace.clone();
+                menu.entry("Open File in Project", None, move |window, cx| {
+                    workspace
+                        .update(cx, |workspace, cx| {
+                            workspace
+                                .open_path_preview(
+                                    project_path.clone(),
+                                    None,
+                                    false,
+                                    false,
+                                    true,
+                                    window,
+                                    cx,
+                                )
+                                .detach_and_log_err(cx);
+                        })
+                        .log_err();
+                })
+            })
+        }
+        None => menu,
+    };
+    commit_file_apply_entries(menu, sha, file_path, repository.downgrade(), workspace)
+}
+
+pub(crate) fn commit_file_apply_entries(
+    menu: ContextMenu,
+    sha: SharedString,
+    file_path: RepoPath,
+    repository: WeakEntity<Repository>,
+    workspace: WeakEntity<Workspace>,
+) -> ContextMenu {
+    [
+        ("Cherry-pick File to Working Tree", Direction::Apply),
+        ("Revert File in Working Tree", Direction::Revert),
+    ]
+    .into_iter()
+    .fold(menu, |menu, (label, direction)| {
+        let sha = sha.clone();
+        let file_path = file_path.clone();
+        let repository = repository.clone();
+        let workspace = workspace.clone();
+        menu.entry(label, None, move |window, cx| {
+            let Some(repository) = repository.upgrade() else {
+                return;
+            };
+            let repo_dir = repository.read(cx).work_directory_abs_path.clone();
+            let sha = sha.clone();
+            let file_path = file_path.as_unix_str().to_string();
+            cx.background_spawn(async move {
+                git_ops::apply_commit_file(&repo_dir, &sha, &file_path, direction).await
+            })
+            .detach_and_notify_err(workspace.clone(), window, cx);
+        })
     })
 }
 

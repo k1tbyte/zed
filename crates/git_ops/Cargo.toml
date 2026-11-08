@@ -1,0 +1,22 @@
+[package]
+name = "git_ops"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/git_ops.rs"
+doctest = false
+
+[dependencies]
+anyhow.workspace = true
+futures.workspace = true
+util.workspace = true
+
+[dev-dependencies]
+smol.workspace = true
+tempfile.workspace = true

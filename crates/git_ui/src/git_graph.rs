@@ -2,7 +2,7 @@ pub use crate::commit_context_menu::{CopyCommitSha, CopyCommitTag, OpenCommitVie
 use crate::{
     commit_context_menu::{
         CUSTOM_GIT_COMMANDS_DOCS_SLUG, CommitContextMenuData, CommitContextMenuSource,
-        commit_context_menu, git_context_menu_tasks, git_task_context,
+        commit_context_menu, commit_file_context_menu, git_context_menu_tasks, git_task_context,
     },
     commit_tooltip::CommitAvatar,
     commit_view::CommitView,
@@ -279,6 +279,7 @@ impl ChangedFileEntry {
         commit_sha: SharedString,
         repository: WeakEntity<Repository>,
         workspace: WeakEntity<Workspace>,
+        git_graph: WeakEntity<GitGraph>,
         _cx: &App,
     ) -> AnyElement {
         let file_name = self.file_name.clone();
@@ -309,6 +310,23 @@ impl ChangedFileEntry {
                     format!("{}/{}", dir_path, file_name).into()
                 };
                 move |_, cx| Tooltip::with_meta("View Changes", None, meta.clone(), cx)
+            })
+            .on_secondary_mouse_down({
+                let commit_sha = commit_sha.clone();
+                let repo_path = self.repo_path.clone();
+                move |event, window, cx| {
+                    git_graph
+                        .update(cx, |git_graph, cx| {
+                            git_graph.deploy_changed_file_context_menu(
+                                event.position,
+                                commit_sha.clone(),
+                                repo_path.clone(),
+                                window,
+                                cx,
+                            )
+                        })
+                        .ok();
+                }
             })
             .on_click({
                 let entry = self.clone();
@@ -2758,6 +2776,32 @@ impl GitGraph {
         self.set_context_menu(context_menu, position, Some(index), window, cx);
     }
 
+    fn deploy_changed_file_context_menu(
+        &mut self,
+        position: Point<Pixels>,
+        sha: SharedString,
+        file_path: RepoPath,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repository) = self.get_repository(cx) else {
+            return;
+        };
+        let workspace = self.workspace.clone();
+        let focus_handle = self.focus_handle.clone();
+        let context_menu = ContextMenu::build(window, cx, move |menu, _, cx| {
+            commit_file_context_menu(
+                menu.context(focus_handle),
+                sha,
+                file_path,
+                repository,
+                workspace,
+                cx,
+            )
+        });
+        self.set_context_menu(context_menu, position, None, window, cx);
+    }
+
     fn set_context_menu(
         &mut self,
         context_menu: Entity<ContextMenu>,
@@ -3469,6 +3513,7 @@ impl GitGraph {
                                                                 commit_sha.clone(),
                                                                 repository.clone(),
                                                                 workspace.clone(),
+                                                                git_graph.clone(),
                                                                 cx,
                                                             )
                                                         }
@@ -3485,6 +3530,7 @@ impl GitGraph {
                                                         commit_sha.clone(),
                                                         repository.clone(),
                                                         workspace.clone(),
+                                                        git_graph.clone(),
                                                         cx,
                                                     )
                                                 }

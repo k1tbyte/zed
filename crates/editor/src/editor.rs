@@ -109,7 +109,7 @@ pub use editor_settings::{
 };
 pub use element::{
     CursorLayout, EditorElement, HighlightedRange, HighlightedRangeLine, PointForPosition,
-    file_status_label_color, render_breadcrumb_text,
+    file_path_menu_entries, file_status_label_color, render_breadcrumb_text,
 };
 pub use git::blame::{BlameRenderer, GitBlame};
 pub use git::{

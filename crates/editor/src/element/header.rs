@@ -1,6 +1,7 @@
 use std::ffi::OsStr;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use collections::HashMap;
 use file_icons::FileIcons;
@@ -14,7 +15,7 @@ use gpui::{
 };
 use language::language_settings::ShowWhitespaceSetting;
 use multi_buffer::{Anchor, ExcerptBoundaryInfo, MultiBuffer};
-use project::Entry;
+use project::{Entry, Project, WorktreeId};
 use settings::{RelativeLineNumbers, Settings};
 use smallvec::SmallVec;
 use sum_tree::Bias;
@@ -24,7 +25,7 @@ use ui::{
     ButtonLike, ContextMenu, DiffStat, Indicator, KeyBinding, Tooltip, prelude::*,
     right_click_menu, text_for_keystroke, utils::WithRemSize,
 };
-use util::ResultExt;
+use util::{ResultExt, paths::PathStyle, rel_path::RelPath};
 use workspace::{ItemHandle, ItemSettings, OpenInTerminal, OpenTerminal, RevealInProjectPanel};
 
 use super::{
@@ -1007,88 +1008,16 @@ pub(crate) fn render_buffer_header(
             let buffer_snapshot = buffer_snapshot.clone();
             ContextMenu::build(window, cx, move |mut menu, window, cx| {
                 if let Some(file) = file
-                    && let Some(project) = editor.read(cx).project()
-                    && let Some(worktree) =
-                        project.read(cx).worktree_for_id(file.worktree_id(cx), cx)
+                    && let Some(project) = editor.read(cx).project().cloned()
                 {
-                    let path_style = file.path_style(cx);
-                    let worktree = worktree.read(cx);
-                    let relative_path = file.path();
-                    let entry_for_path = worktree.entry_for_path(relative_path);
-                    let abs_path = entry_for_path.map(|e| {
-                        e.canonical_path
-                            .as_deref()
-                            .map_or_else(|| worktree.absolutize(relative_path), Path::to_path_buf)
-                    });
-                    let has_relative_path = worktree.root_entry().is_some_and(Entry::is_dir);
-
-                    let parent_abs_path = abs_path
-                        .as_ref()
-                        .and_then(|abs_path| Some(abs_path.parent()?.to_path_buf()));
-                    let relative_path = has_relative_path
-                        .then_some(relative_path)
-                        .map(ToOwned::to_owned);
-
-                    let visible_in_project_panel = relative_path.is_some() && worktree.is_visible();
-                    let reveal_in_project_panel = entry_for_path
-                        .filter(|_| visible_in_project_panel)
-                        .map(|entry| entry.id);
-                    menu = menu
-                        .when_some(abs_path, |menu, abs_path| {
-                            menu.entry(
-                                "Copy Path",
-                                Some(Box::new(zed_actions::workspace::CopyPath)),
-                                window.handler_for(&editor, move |_, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(
-                                        abs_path.to_string_lossy().into_owned(),
-                                    ));
-                                }),
-                            )
-                        })
-                        .when_some(relative_path, |menu, relative_path| {
-                            menu.entry(
-                                "Copy Relative Path",
-                                Some(Box::new(zed_actions::workspace::CopyRelativePath)),
-                                window.handler_for(&editor, move |_, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(
-                                        relative_path.display(path_style).to_string(),
-                                    ));
-                                }),
-                            )
-                        })
-                        .when(
-                            reveal_in_project_panel.is_some() || parent_abs_path.is_some(),
-                            |menu| menu.separator(),
-                        )
-                        .when_some(reveal_in_project_panel, |menu, entry_id| {
-                            menu.entry(
-                                "Reveal In Project Panel",
-                                Some(Box::new(RevealInProjectPanel::default())),
-                                window.handler_for(&editor, move |editor, _, cx| {
-                                    if let Some(project) = &mut editor.project {
-                                        project.update(cx, |_, cx| {
-                                            cx.emit(project::Event::RevealInProjectPanel(entry_id))
-                                        });
-                                    }
-                                }),
-                            )
-                        })
-                        .when_some(parent_abs_path, |menu, parent_abs_path| {
-                            menu.entry(
-                                "Open in Terminal",
-                                Some(Box::new(OpenInTerminal)),
-                                window.handler_for(&editor, move |_, window, cx| {
-                                    window.dispatch_action(
-                                        OpenTerminal {
-                                            working_directory: parent_abs_path.clone(),
-                                            local: false,
-                                        }
-                                        .boxed_clone(),
-                                        cx,
-                                    );
-                                }),
-                            )
-                        });
+                    menu = file_path_menu_entries(
+                        menu,
+                        &project,
+                        file.worktree_id(cx),
+                        file.path(),
+                        file.path_style(cx),
+                        cx,
+                    );
                 }
 
                 menu = editor.update(cx, |editor, cx| {
@@ -1107,6 +1036,93 @@ pub(crate) fn render_buffer_header(
                 menu.context(menu_context)
             })
         })
+}
+
+pub fn file_path_menu_entries(
+    menu: ContextMenu,
+    project: &Entity<Project>,
+    worktree_id: WorktreeId,
+    relative_path: &Arc<RelPath>,
+    path_style: PathStyle,
+    cx: &App,
+) -> ContextMenu {
+    let Some(worktree) = project.read(cx).worktree_for_id(worktree_id, cx) else {
+        return menu;
+    };
+    let worktree = worktree.read(cx);
+    let entry_for_path = worktree.entry_for_path(relative_path);
+    let abs_path = entry_for_path.map(|e| {
+        e.canonical_path
+            .as_deref()
+            .map_or_else(|| worktree.absolutize(relative_path), Path::to_path_buf)
+    });
+    let has_relative_path = worktree.root_entry().is_some_and(Entry::is_dir);
+
+    let parent_abs_path = abs_path
+        .as_ref()
+        .and_then(|abs_path| Some(abs_path.parent()?.to_path_buf()));
+    let relative_path = has_relative_path
+        .then_some(relative_path)
+        .map(ToOwned::to_owned);
+
+    let visible_in_project_panel = relative_path.is_some() && worktree.is_visible();
+    let reveal_in_project_panel = entry_for_path
+        .filter(|_| visible_in_project_panel)
+        .map(|entry| entry.id);
+    menu.when_some(abs_path, |menu, abs_path| {
+        menu.entry(
+            "Copy Path",
+            Some(Box::new(zed_actions::workspace::CopyPath)),
+            move |_, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(
+                    abs_path.to_string_lossy().into_owned(),
+                ));
+            },
+        )
+    })
+    .when_some(relative_path, |menu, relative_path| {
+        menu.entry(
+            "Copy Relative Path",
+            Some(Box::new(zed_actions::workspace::CopyRelativePath)),
+            move |_, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(
+                    relative_path.display(path_style).to_string(),
+                ));
+            },
+        )
+    })
+    .when(
+        reveal_in_project_panel.is_some() || parent_abs_path.is_some(),
+        |menu| menu.separator(),
+    )
+    .when_some(reveal_in_project_panel, |menu, entry_id| {
+        let project = project.clone();
+        menu.entry(
+            "Reveal In Project Panel",
+            Some(Box::new(RevealInProjectPanel::default())),
+            move |_, cx| {
+                project.update(cx, |_, cx| {
+                    cx.emit(project::Event::RevealInProjectPanel(entry_id))
+                });
+            },
+        )
+    })
+    .when_some(parent_abs_path, |menu, parent_abs_path| {
+        menu.entry(
+            "Open in Terminal",
+            Some(Box::new(OpenInTerminal)),
+            move |window, cx| {
+                window.dispatch_action(
+                    OpenTerminal {
+                        working_directory: parent_abs_path.clone(),
+                        local: false,
+                    }
+                    .boxed_clone(),
+                    cx,
+                );
+            },
+        )
+    })
 }
 
 pub fn file_status_label_color(file_status: Option<FileStatus>) -> Color {
