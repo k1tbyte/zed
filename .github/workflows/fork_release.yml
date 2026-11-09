@@ -47,6 +47,11 @@ jobs:
           sw_vers
           xcodebuild -version
           df -h /
+      # Dependencies and the tools the script installs; only the default branch's cache reaches tag runs.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fork-macos
+          cache-on-failure: true
       - name: Bundle
         run: ./script/bundle-mac aarch64-apple-darwin
       - uses: actions/upload-artifact@v4
@@ -80,6 +85,10 @@ jobs:
         run: |
           $version = (Select-String -Path crates/zed/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
           "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fork-windows
+          cache-on-failure: true
       - name: Bundle
         shell: pwsh
         run: script/bundle-windows.ps1 -Architecture x86_64
