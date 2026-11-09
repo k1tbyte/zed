@@ -84,10 +84,13 @@ jobs:
         run: |
           $version = (Select-String -Path crates/zed/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
           "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+      # tar stores the target junction as an empty link, so the real directory is cached instead.
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: fork-windows
+          shared-key: fork-windows-target
           cache-on-failure: true
+          cache-targets: false
+          cache-directories: C:/zed-target
       - name: Bundle
         shell: pwsh
         run: script/bundle-windows.ps1 -Architecture x86_64
