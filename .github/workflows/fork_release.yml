@@ -30,9 +30,8 @@ concurrency:
 env:
   CARGO_INCREMENTAL: 0
   CARGO_TERM_COLOR: always
-  # A free runner has neither the memory nor the hours for upstream's thin LTO build.
-  CARGO_PROFILE_RELEASE_LTO: "off"
-  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+  # Optimization settings are upstream's (thin LTO). Only the debug info is trimmed, which
+  # keeps the thin LTO link within a free runner's memory and disk and does not change speed.
   CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
 
 jobs:
