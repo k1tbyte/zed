@@ -12,6 +12,7 @@
 //!
 //! If you're looking to improve Vim mode, you should check out Vim crate that wraps Editor and overrides its behavior.
 pub mod actions;
+mod auto_fold;
 pub mod blink_manager;
 mod bracket_colorization;
 mod clangd_ext;
@@ -1203,6 +1204,7 @@ pub struct Editor {
     refresh_code_lens_task: Task<()>,
     use_document_folding_ranges: bool,
     refresh_folding_ranges_task: Task<()>,
+    auto_fold_pending: bool,
     inlay_hints: Option<LspInlayHintData>,
     folding_newlines: Task<()>,
     select_next_options: Option<SelectSearchOptions>,
@@ -2568,6 +2570,7 @@ impl Editor {
             refresh_code_lens_task: Task::ready(()),
             use_document_folding_ranges: false,
             refresh_folding_ranges_task: Task::ready(()),
+            auto_fold_pending: true,
             inlay_hints: None,
             next_color_inlay_id: 0,
             post_scroll_update: Task::ready(()),
@@ -2755,6 +2758,10 @@ impl Editor {
             if let Some(buffer) = multi_buffer.read(cx).as_singleton() {
                 editor.register_buffer(buffer.read(cx).remote_id(), cx);
             }
+            // After the caller's restore of saved folds and selections, which follows construction.
+            cx.defer_in(window, |editor, window, cx| {
+                editor.auto_fold_on_open(window, cx)
+            });
             editor.report_editor_event(ReportEditorEvent::EditorOpened, None, cx);
         }
 
@@ -10228,6 +10235,7 @@ impl Editor {
                 });
             }
             multi_buffer::Event::Reparsed(buffer_id) => {
+                self.auto_fold_on_open(window, cx);
                 self.refresh_runnables(Some(*buffer_id), window, cx);
                 self.refresh_selected_text_highlights(&self.display_snapshot(cx), true, window, cx);
                 self.colorize_brackets(true, cx);
@@ -10255,6 +10263,7 @@ impl Editor {
                     self.refresh_document_highlights(cx);
                 }
                 jsx_tag_auto_close::refresh_enabled_in_any_buffer(self, multibuffer, cx);
+                self.auto_fold_on_open(window, cx);
                 cx.emit(EditorEvent::Reparsed(*buffer_id));
                 self.update_edit_prediction_settings(cx);
                 cx.notify();

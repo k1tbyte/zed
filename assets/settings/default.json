@@ -1450,6 +1450,13 @@
   // - "on": Use LSP folding wherever possible, falling back to tree-sitter and indent-based folding when no results were returned by the server.
   "document_folding_ranges": "off",
 
+  // Regions to fold when a file opens, unless it already has saved folds.
+  // Needs a tree-sitter grammar that Zed knows the import statements of.
+  //
+  // Options:
+  // - "imports": The first run of import statements at the top of the file.
+  "auto_fold": [],
+
   // Controls the source of document symbols used for outlines and breadcrumbs.
   //
   // Options:

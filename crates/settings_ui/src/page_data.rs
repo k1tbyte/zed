@@ -10593,7 +10593,7 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
         ]
     }
 
-    fn miscellaneous_section() -> [SettingsPageItem; 8] {
+    fn miscellaneous_section() -> [SettingsPageItem; 9] {
         [
             SettingsPageItem::SectionHeader("Miscellaneous"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -10720,6 +10720,29 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
                     pick: |settings_content| settings_content.modeline_lines.as_ref(),
                     write: |settings_content, value, _| {
                         settings_content.modeline_lines = value;
+                    },
+                }),
+                metadata: None,
+                files: USER | PROJECT,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Fold Imports on Open",
+                description: "Fold the import block at the top of a file when it opens, unless the file already has saved folds.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("languages.$(language).auto_fold"),
+                    pick: |settings_content| {
+                        language_settings_field(
+                            settings_content,
+                            crate::auto_fold_setting::imports_enabled,
+                        )
+                    },
+                    write: |settings_content, value, _| {
+                        language_settings_field_mut(
+                            settings_content,
+                            value,
+                            crate::auto_fold_setting::set_imports,
+                        )
                     },
                 }),
                 metadata: None,

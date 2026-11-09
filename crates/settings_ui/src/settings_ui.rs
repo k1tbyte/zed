@@ -1,3 +1,4 @@
+mod auto_fold_setting;
 mod components;
 mod page_data;
 pub mod pages;

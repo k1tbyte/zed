@@ -7,8 +7,8 @@ use settings_macros::{MergeFrom, with_fallible_options};
 use std::sync::Arc;
 
 use crate::{
-    DelayMs, DocumentFoldingRanges, DocumentSymbols, ExtendingSet, SemanticTokens, SplicingVec,
-    merge_from,
+    AutoFoldKind, DelayMs, DocumentFoldingRanges, DocumentSymbols, ExtendingSet, SemanticTokens,
+    SplicingVec, merge_from,
 };
 
 /// The state of the modifier keys at some point in time
@@ -673,6 +673,14 @@ pub struct LanguageSettingsContent {
     ///
     /// Default: "off"
     pub document_folding_ranges: Option<DocumentFoldingRanges>,
+    /// Regions to fold when a file opens, unless it already has saved folds.
+    /// Needs a tree-sitter grammar that Zed knows the import statements of.
+    ///
+    /// Options:
+    /// - "imports": The first run of import statements at the top of the file.
+    ///
+    /// Default: []
+    pub auto_fold: Option<Vec<AutoFoldKind>>,
     /// Controls the source of document symbols used for outlines and breadcrumbs.
     ///
     /// Options:

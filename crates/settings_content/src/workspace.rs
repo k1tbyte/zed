@@ -1176,6 +1176,26 @@ pub enum DocumentFoldingRanges {
     On,
 }
 
+/// A kind of region that is folded automatically when a file opens.
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    Clone,
+    Copy,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoFoldKind {
+    /// The first run of import statements at the top of the file.
+    Imports,
+}
+
 impl DocumentFoldingRanges {
     /// Returns true if LSP folding ranges should be requested from language servers.
     pub fn enabled(&self) -> bool {
