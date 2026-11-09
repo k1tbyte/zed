@@ -20,6 +20,7 @@ use crate::{
 use agent_settings::{AgentSettings, UserAgentsMd};
 use anyhow::Context as _;
 use askpass::AskPassDelegate;
+use changelists::{ChangelistId, ChangelistState, NewChangelist};
 use client::zed_urls;
 use collections::{BTreeMap, HashMap, HashSet};
 use db::kvp::KeyValueStore;
@@ -116,6 +117,8 @@ const TREE_INDENT: f32 = 16.0;
 const MAX_HISTORY_TAG_CHIPS: usize = 3;
 // Horizontal offset that aligns the tree indent guides with the row icon column.
 const INDENT_GUIDE_LEFT_OFFSET: gpui::Pixels = gpui::px(19.);
+
+mod changelists;
 
 actions!(
     git_panel,
@@ -364,6 +367,11 @@ fn git_panel_context_menu(
                 "Trash Untracked Files",
                 TrashUntrackedFiles.boxed_clone(),
             )
+            .when(group_by == GitPanelGroupBy::Status, |context_menu| {
+                context_menu
+                    .separator()
+                    .action("New Changelist…", NewChangelist.boxed_clone())
+            })
     })
 }
 
@@ -615,6 +623,7 @@ enum Section {
     New,
     Staged,
     Unstaged,
+    Changelist(ChangelistId),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -741,6 +750,8 @@ impl GitHeaderEntry {
                 !repo.had_conflict_on_last_merge_head_change(&status_entry.repo_path)
                     && GitPanel::stage_status_for_entry(status_entry, repo).has_unstaged()
             }
+            // Membership needs the panel's lists, see `GitPanel::header_contains`.
+            Section::Changelist(_) => false,
         }
     }
     pub fn title(&self) -> &'static str {
@@ -750,6 +761,7 @@ impl GitHeaderEntry {
             Section::New => "Untracked",
             Section::Staged => "Staged",
             Section::Unstaged => "Unstaged",
+            Section::Changelist(_) => "Changelist",
         }
     }
 }
@@ -1181,6 +1193,7 @@ pub struct GitPanel {
     generate_commit_message_task: Option<Task<Option<()>>>,
     entries: Vec<GitListEntry>,
     collapsed_sections: HashSet<Section>,
+    changelists: ChangelistState,
     view_mode: GitPanelViewMode,
     tree_expanded_dirs: HashMap<TreeKey, bool>,
     projected_entries_by_path: HashMap<RepoPath, SmallVec<[ProjectedChangeEntry; 2]>>,
@@ -1520,6 +1533,7 @@ impl GitPanel {
                 generate_commit_message_task: None,
                 entries: Vec::new(),
                 collapsed_sections: HashSet::default(),
+                changelists: ChangelistState::new(window, cx),
                 view_mode: GitPanelViewMode::from_settings(cx),
                 tree_expanded_dirs: HashMap::default(),
                 projected_entries_by_path: HashMap::default(),
@@ -1963,7 +1977,9 @@ impl GitPanel {
                 None
             }
         });
-        let section = selected_section.or(default_section);
+        let section = selected_section
+            .or_else(|| self.changelists.section_of(&repo_path))
+            .or(default_section);
 
         let mut needs_rebuild = false;
         if let (Some(section), Some(tree_state)) = (section, self.view_mode.tree_state_mut()) {
@@ -3563,7 +3579,7 @@ impl GitPanel {
                     let entries = self
                         .change_entries_by_path()
                         .filter(|status_entry| {
-                            section.contains(status_entry, &repo)
+                            self.header_contains(section, status_entry, &repo)
                                 && GitPanel::stage_status_for_entry(status_entry, &repo).as_bool()
                                     != Some(goal_staged_state)
                         })
@@ -5769,6 +5785,9 @@ impl GitPanel {
         let mut max_width_estimate = 0usize;
         let mut max_width_item_index = None;
 
+        self.changelists
+            .reconcile(self.active_repository.as_ref(), cx);
+
         let Some(repo) = self.active_repository.as_ref() else {
             // Just clear entries if no repository is active.
             cx.notify();
@@ -5871,6 +5890,12 @@ impl GitPanel {
             self.single_tracked_entry = tracked_entries.pop();
         }
 
+        let mut changelist_entries = self.changelists.partition(
+            &mut changed_entries,
+            &mut new_entries,
+            group_by_file_status,
+        );
+
         if !is_tree_view {
             let sort_entries = |entries: &mut Vec<GitStatusEntry>| match sort_by {
                 GitPanelSortBy::Path => entries.sort_by(|a, b| a.repo_path.cmp(&b.repo_path)),
@@ -5887,6 +5912,9 @@ impl GitPanel {
             sort_entries(&mut new_entries);
             sort_entries(&mut staged_entries);
             sort_entries(&mut unstaged_entries);
+            for (_, entries) in &mut changelist_entries {
+                sort_entries(entries);
+            }
         }
 
         let mut push_entry =
@@ -5922,6 +5950,9 @@ impl GitPanel {
                 this.entries.push(entry);
             };
 
+        let has_listed_files = changelist_entries
+            .iter()
+            .any(|(_, entries)| !entries.is_empty());
         let section_entries = if group_by_staging_state {
             vec![
                 (Section::Conflict, std::mem::take(&mut conflict_entries)),
@@ -5929,11 +5960,13 @@ impl GitPanel {
                 (Section::Unstaged, std::mem::take(&mut unstaged_entries)),
             ]
         } else {
-            vec![
+            let mut sections = vec![
                 (Section::Conflict, std::mem::take(&mut conflict_entries)),
                 (Section::Tracked, std::mem::take(&mut changed_entries)),
-                (Section::New, std::mem::take(&mut new_entries)),
-            ]
+            ];
+            sections.append(&mut changelist_entries);
+            sections.push((Section::New, std::mem::take(&mut new_entries)));
+            sections
         };
 
         // Keep Staged/Unstaged headers pinned even when empty (as long as there's
@@ -5947,9 +5980,12 @@ impl GitPanel {
                 .map(|(section, entries)| (*section, entries.len())),
         );
         let show_when_empty = |section: Section| {
-            group_by_staging_state
-                && has_any_section_entries
-                && matches!(section, Section::Staged | Section::Unstaged)
+            matches!(section, Section::Changelist(_))
+                // Keeps a drop target for taking the last files out of their lists.
+                || (has_listed_files && section == Section::Tracked)
+                || (group_by_staging_state
+                    && has_any_section_entries
+                    && matches!(section, Section::Staged | Section::Unstaged))
         };
 
         match &mut self.view_mode {
@@ -6104,7 +6140,9 @@ impl GitPanel {
             Section::Conflict => (self.conflicted_staged_count, self.conflicted_count),
             Section::Staged => (self.entry_count, self.entry_count),
             Section::Unstaged => (0, self.entry_count),
+            Section::Changelist(_) => (0, 0),
         };
+        let (staged_count, count) = self.changelists.adjust(header_type, (staged_count, count));
         if staged_count == 0 {
             ToggleState::Unselected
         } else if count == staged_count {
@@ -6205,6 +6243,7 @@ impl GitPanel {
         self.tracked_staged_count = 0;
         self.entry_count = 0;
         self.diff_stat_total = DiffStat::default();
+        self.changelists.reset_tallies();
 
         let change_entries = self.change_entries_by_path().cloned().collect::<Vec<_>>();
         for status_entry in change_entries {
@@ -6230,11 +6269,15 @@ impl GitPanel {
                 if stage_status.has_staged() {
                     self.new_staged_count += 1;
                 }
+                self.changelists
+                    .tally(&status_entry, stage_status.has_staged());
             } else {
                 self.tracked_count += 1;
                 if stage_status.has_staged() {
                     self.tracked_staged_count += 1;
                 }
+                self.changelists
+                    .tally(&status_entry, stage_status.has_staged());
             }
         }
     }
@@ -7586,6 +7629,7 @@ impl GitPanel {
             self.focus_handle.clone(),
             Some(repository.downgrade()),
             self.workspace.clone(),
+            None,
             window,
             cx,
         );
@@ -8475,7 +8519,7 @@ impl GitPanel {
                         .color(Color::Muted),
                     )
                     .child(
-                        Label::new(header.title())
+                        Label::new(self.header_title(header))
                             .color(Color::Muted)
                             .size(LabelSize::Small),
                     ),
@@ -8530,6 +8574,7 @@ impl GitPanel {
                 })
                 .ok();
             })
+            .map(|header| self.changelist_header(header, section, cx))
             .into_any_element()
     }
 
@@ -8537,6 +8582,8 @@ impl GitPanel {
         let message = match section {
             Section::Staged => "No staged changes yet",
             Section::Unstaged => "No unstaged changes",
+            Section::Changelist(_) => "Drop files here",
+            Section::Tracked => "No other changes",
             _ => "No changes",
         };
         h_flex()
@@ -8629,6 +8676,7 @@ impl GitPanel {
         } else {
             "View File History"
         };
+        let panel = cx.weak_entity();
         ContextMenu::build(window, cx, |context_menu, _, _| {
             context_menu
                 .context(self.focus_handle.clone())
@@ -8671,6 +8719,7 @@ impl GitPanel {
                         .separator()
                         .action(view_file_history_title, Box::new(git::FileHistory))
                 })
+                .map(|context_menu| self.changelist_submenu(context_menu, panel))
         })
     }
 
@@ -9070,6 +9119,7 @@ impl GitPanel {
                     cx.stop_propagation();
                 },
             )
+            .map(|row| self.changelist_drag_source(row, self.dragged_paths(ix, entry)))
             .into_any_element()
     }
 
@@ -9260,6 +9310,7 @@ impl GitPanel {
                     this.deploy_entry_context_menu(event.position, ix, window, cx);
                 }),
             )
+            .map(|row| self.changelist_drag_source(row, self.dragged_directory_paths(entry)))
             .into_any_element()
     }
 
@@ -9579,6 +9630,7 @@ impl Render for GitPanel {
                     .on_action(cx.listener(GitPanel::toggle_signoff_enabled))
                     .on_action(cx.listener(Self::stage_all))
                     .on_action(cx.listener(Self::unstage_all))
+                    .on_action(cx.listener(Self::new_changelist))
                     .on_action(cx.listener(Self::stage_selected))
                     .on_action(cx.listener(Self::unstage_selected))
                     .on_action(cx.listener(Self::stage_section))

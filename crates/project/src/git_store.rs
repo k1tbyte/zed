@@ -2504,7 +2504,11 @@ impl GitStore {
         cx.emit(GitStoreEvent::JobsUpdated)
     }
 
-    fn repository_is_trusted(&self, repository_id: RepositoryId, cx: &mut Context<Self>) -> bool {
+    pub fn repository_is_trusted(
+        &self,
+        repository_id: RepositoryId,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(worktree_ids) = self.worktree_ids.get(&repository_id) else {
             return false;
         };

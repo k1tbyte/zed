@@ -6,6 +6,10 @@ use crate::{
     },
     commit_tooltip::CommitAvatar,
     commit_view::CommitView,
+    git_graph_branches::{BranchesSidebar, BranchesSidebarEvent},
+    git_graph_history::{HistoryTarget, Pick, RowSelection, selection_menu},
+    git_graph_panel::GitGraphPanel,
+    git_graph_view_options::ViewOptions,
     git_status_icon,
 };
 use collections::{BTreeMap, HashMap, IndexSet};
@@ -80,6 +84,8 @@ const COMMIT_TAG_LIST_WIDTH_IN_REMS: Rems = rems(10.);
 const TREE_INDENT: f32 = 20.0;
 const TABLE_COLUMN_COUNT: usize = 4;
 const ROW_VERTICAL_PADDING: Pixels = px(4.0);
+
+mod layout;
 
 struct CopiedState {
     copied_at: Option<Instant>,
@@ -1238,6 +1244,20 @@ pub fn open_or_reuse_graph(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
+    if let Some(panel) = workspace.focus_panel::<GitGraphPanel>(window, cx) {
+        let git_graph = panel.update(cx, |panel, cx| {
+            panel.show_graph(repo_id, log_source, window, cx)
+        });
+        if let Some(sha) = sha {
+            cx.defer(move |cx| {
+                git_graph.update(cx, |graph, cx| {
+                    graph.select_commit_by_sha(sha.as_str(), cx);
+                });
+            });
+        }
+        return;
+    }
+
     let existing = workspace.items_of_type::<GitGraph>(cx).find(|graph| {
         let graph = graph.read(cx);
         graph.repo_id == repo_id && graph.log_source == log_source
@@ -1482,6 +1502,7 @@ pub struct GitGraph {
     /// hidden regardless of whether the table is resizable. `true` means the column is hidden.
     column_visibility: TableRow<bool>,
     selected_entry_idx: Option<usize>,
+    selection: RowSelection,
     hovered_entry_idx: Option<usize>,
     graph_canvas_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     log_source: LogSource,
@@ -1500,6 +1521,9 @@ pub struct GitGraph {
     changed_files_expanded_dirs: HashMap<RepoPath, bool>,
     pending_select_sha: Option<Oid>,
     nav_history: Option<ItemNavHistory>,
+    branches_sidebar: Entity<BranchesSidebar>,
+    view_options: ViewOptions,
+    layout: layout::LayoutSync,
 }
 
 impl GitGraph {
@@ -1509,6 +1533,7 @@ impl GitGraph {
         self.search_state.selected_index = None;
         self.search_state.state.next_state();
         self.context_menu = None;
+        self.selection.clear();
         cx.emit(ItemEvent::Edit);
         cx.notify();
     }
@@ -1550,6 +1575,9 @@ impl GitGraph {
         let Some((widest_label, _)) = self.graph_data.widest_ref_label.as_ref() else {
             return px(0.);
         };
+        if self.view_options.refs_in_description {
+            return px(0.);
+        }
 
         let text_style = window.text_style();
         let font_size = TextSize::Small.rems(cx).to_pixels(window.rem_size());
@@ -1718,6 +1746,21 @@ impl GitGraph {
         })
         .detach();
 
+        let branches_sidebar = cx.new(|cx| {
+            BranchesSidebar::new(
+                repo_id,
+                git_store.clone(),
+                workspace.clone(),
+                log_source.clone(),
+                window,
+                cx,
+            )
+        });
+        cx.subscribe(&branches_sidebar, |this, _, event, cx| match event {
+            BranchesSidebarEvent::SelectSource(source) => this.set_log_source(source.clone(), cx),
+        })
+        .detach();
+
         let mut this = GitGraph {
             focus_handle,
             git_store,
@@ -1736,6 +1779,7 @@ impl GitGraph {
             column_widths,
             column_visibility,
             selected_entry_idx: None,
+            selection: RowSelection::default(),
             hovered_entry_idx: None,
             graph_canvas_bounds: Rc::new(Cell::new(None)),
             selected_commit_diff: None,
@@ -1753,8 +1797,12 @@ impl GitGraph {
             changed_files_expanded_dirs: HashMap::default(),
             pending_select_sha: None,
             nav_history: None,
+            branches_sidebar,
+            view_options: ViewOptions::load(cx),
+            layout: layout::LayoutSync::new(),
         };
 
+        this.restore_layout(cx);
         this.fetch_initial_graph_data(cx);
         this
     }
@@ -1867,6 +1915,30 @@ impl GitGraph {
         }
     }
 
+    pub(crate) fn repo_id(&self) -> RepositoryId {
+        self.repo_id
+    }
+
+    pub(crate) fn log_source(&self) -> &LogSource {
+        &self.log_source
+    }
+
+    pub(crate) fn set_log_source(&mut self, log_source: LogSource, cx: &mut Context<Self>) {
+        if self.log_source == log_source {
+            return;
+        }
+        self.log_source = log_source.clone();
+        self.pending_select_sha = None;
+        self.selected_entry_idx = None;
+        self.selected_commit_diff = None;
+        self.selected_commit_diff_stats = None;
+        self.changed_files_expanded_dirs.clear();
+        self.invalidate_state(cx);
+        self.fetch_initial_graph_data(cx);
+        self.branches_sidebar
+            .update(cx, |sidebar, cx| sidebar.set_active_source(log_source, cx));
+    }
+
     fn get_repository(&self, cx: &App) -> Option<Entity<Repository>> {
         let git_store = self.git_store.read(cx);
         git_store.repositories().get(&self.repo_id).cloned()
@@ -1947,6 +2019,43 @@ impl GitGraph {
             )
             .tooltip(move |_window, cx| Tooltip::simple(tooltip_text.clone(), cx))
             .into_any_element()
+    }
+
+    // When a commit carries multiple refs we only render a single badge (preferring the
+    // checked-out branch, falling back to the first ref) plus a "+N" counter, so the row
+    // stays legible instead of cramming several truncated chips together.
+    fn ref_chips(
+        &self,
+        commit_idx: usize,
+        ref_names: &[SharedString],
+        accent_color: gpui::Hsla,
+        head_branch_name: &Option<SharedString>,
+        background: gpui::Hsla,
+        cx: &mut Context<Self>,
+    ) -> Option<(AnyElement, Option<AnyElement>)> {
+        let (primary_name, is_head) = match ref_names
+            .iter()
+            .find(|name| Self::is_head_ref(name.as_ref(), head_branch_name))
+        {
+            Some(head_ref) => (head_ref.clone(), true),
+            None => (ref_names.first()?.clone(), false),
+        };
+        let primary_chip = self.render_ref_chip(
+            primary_name.clone(),
+            accent_color,
+            is_head,
+            commit_idx,
+            background,
+            cx,
+        );
+        let hidden_refs = ref_names
+            .iter()
+            .filter(|name| **name != primary_name)
+            .cloned()
+            .collect::<Vec<_>>();
+        let count_chip = (!hidden_refs.is_empty())
+            .then(|| self.render_ref_count_chip(hidden_refs, accent_color, commit_idx, cx));
+        Some((primary_chip, count_chip))
     }
 
     fn render_ref_count_chip(
@@ -2049,6 +2158,14 @@ impl GitGraph {
             });
         }
 
+        let selected_rows = self.selection.snapshot(self.selected_entry_idx);
+        let accent_colors = cx.theme().accents().clone();
+        let background = cx.theme().colors().editor_background;
+        let head_branch_name = repository.as_ref().and_then(|repository| {
+            let repository = repository.read(cx);
+            let branch = repository.branch.as_ref()?;
+            Some(SharedString::from(branch.name().to_string()))
+        });
         range
             .map(|idx| {
                 let Some((commit, repository)) =
@@ -2083,7 +2200,23 @@ impl GitGraph {
                     author_email = None;
                 }
 
-                let is_selected = self.selected_entry_idx == Some(idx);
+                let ref_chips = self
+                    .view_options
+                    .refs_in_description
+                    .then(|| {
+                        let accent_color = accent_colors.color_for_index(commit.color_idx as u32);
+                        let ref_names = &commit.data.ref_names;
+                        self.ref_chips(
+                            idx,
+                            ref_names,
+                            accent_color,
+                            &head_branch_name,
+                            background,
+                            cx,
+                        )
+                    })
+                    .flatten();
+                let is_selected = selected_rows.contains(idx);
                 let is_matched = self.search_state.matches.contains(&commit.data.sha);
                 let column_label = |label: SharedString| {
                     Label::new(label)
@@ -2134,7 +2267,29 @@ impl GitGraph {
                     div()
                         .id(ElementId::NamedInteger("commit-subject".into(), idx as u64))
                         .overflow_hidden()
-                        .child(h_flex().gap_2().overflow_hidden().child(subject_label))
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .gap_2()
+                                .overflow_hidden()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .child(subject_label),
+                                )
+                                .when_some(ref_chips, |this, (primary_chip, count_chip)| {
+                                    this.child(
+                                        h_flex()
+                                            .flex_shrink_0()
+                                            .max_w(relative(0.5))
+                                            .gap_1()
+                                            .child(primary_chip)
+                                            .children(count_chip),
+                                    )
+                                }),
+                        )
                         .into_any_element(),
                     column_label(formatted_time.into()),
                     {
@@ -2162,6 +2317,7 @@ impl GitGraph {
 
     fn cancel(&mut self, _: &Cancel, _window: &mut Window, cx: &mut Context<Self>) {
         self.selected_entry_idx = None;
+        self.selection.clear();
         self.selected_commit_diff = None;
         self.selected_commit_diff_stats = None;
         self.changed_files_expanded_dirs.clear();
@@ -2356,6 +2512,7 @@ impl GitGraph {
         scroll_strategy: ScrollStrategy,
         cx: &mut Context<Self>,
     ) {
+        self.selection.clear();
         if self.selected_entry_idx == Some(idx) || idx >= self.graph_data.commits.len() {
             debug_assert!(
                 idx < self.graph_data.commits.len(),
@@ -2752,6 +2909,25 @@ impl GitGraph {
         let Some(commit) = self.graph_data.commits.get(index) else {
             return;
         };
+        let selected_rows = self
+            .selection
+            .multiple()
+            .filter(|rows| rows.contains(&index))
+            .map(|rows| rows.iter().copied().collect::<Vec<_>>());
+        if let Some(rows) = selected_rows {
+            if let Some(target) = self.history_target(&rows, cx) {
+                let focus_handle = self.focus_handle.clone();
+                let context_menu = ContextMenu::build(window, cx, move |menu, _, _| {
+                    selection_menu(menu.context(focus_handle), target)
+                });
+                self.set_context_menu(context_menu, position, Some(index), window, cx);
+            }
+            return;
+        }
+        let history = ref_name
+            .is_none()
+            .then(|| self.history_target(&[index], cx))
+            .flatten();
         let repository = self
             .get_repository(cx)
             .map(|repository| repository.downgrade());
@@ -2770,10 +2946,28 @@ impl GitGraph {
             self.focus_handle.clone(),
             repository,
             self.workspace.clone(),
+            history,
             window,
             cx,
         );
         self.set_context_menu(context_menu, position, Some(index), window, cx);
+    }
+
+    fn history_target(&self, rows: &[usize], cx: &mut App) -> Option<HistoryTarget> {
+        let repository = self.get_repository(cx)?;
+        let shas = rows
+            .iter()
+            .filter_map(|row| self.graph_data.commits.get(*row))
+            .map(|commit| commit.data.sha)
+            .collect();
+        Some(HistoryTarget::new(
+            repository,
+            self.workspace.clone(),
+            self.branches_sidebar.downgrade(),
+            shas,
+            self.graph_data.commits.iter().map(|commit| &*commit.data),
+            cx,
+        ))
     }
 
     fn deploy_changed_file_context_menu(
@@ -2837,11 +3031,25 @@ impl GitGraph {
         cx.notify();
     }
 
+    fn update_view_options(
+        &mut self,
+        update: impl FnOnce(&mut ViewOptions),
+        cx: &mut Context<Self>,
+    ) {
+        // Starts from what is stored, so another graph's change to the other option survives.
+        let mut options = ViewOptions::load(cx);
+        update(&mut options);
+        options.save(cx);
+        self.view_options = options;
+        cx.notify();
+    }
+
     fn toggle_column_visibility(&mut self, col_idx: usize, cx: &mut Context<Self>) {
         if let Some(slot) = self.column_visibility.as_mut_slice().get_mut(col_idx) {
             *slot = !*slot;
             // Column visibility is persisted per item, so schedule a workspace serialization.
             cx.emit(ItemEvent::Edit);
+            self.save_layout_soon(cx);
         }
     }
 
@@ -2867,6 +3075,7 @@ impl GitGraph {
 
         let focus_handle = self.focus_handle.clone();
         let git_graph = cx.entity();
+        let refs_in_description = self.view_options.refs_in_description;
         let context_menu = ContextMenu::build(window, cx, |mut context_menu, _window, _cx| {
             context_menu = context_menu.context(focus_handle).header("Columns");
             for (col_idx, label) in columns.iter().enumerate() {
@@ -2884,6 +3093,24 @@ impl GitGraph {
                         git_graph.update(cx, |this, cx| {
                             this.toggle_column_visibility(col_idx, cx);
                             cx.notify();
+                        });
+                    },
+                );
+            }
+            if !is_path_history {
+                context_menu = context_menu.separator().toggleable_entry(
+                    "Refs in Description",
+                    refs_in_description,
+                    IconPosition::End,
+                    None,
+                    move |_window, cx| {
+                        git_graph.update(cx, |this, cx| {
+                            this.update_view_options(
+                                |options| {
+                                    options.refs_in_description = !options.refs_in_description
+                                },
+                                cx,
+                            )
                         });
                     },
                 );
@@ -2913,6 +3140,20 @@ impl GitGraph {
             .gap_1p5()
             .border_b_1()
             .border_color(color.border_variant)
+            .when(!matches!(self.log_source, LogSource::Path(_)), |this| {
+                this.child(
+                    Button::new("git-graph-toggle-branches", "Branches")
+                        .start_icon(Icon::new(IconName::GitBranch).size(IconSize::Small))
+                        .toggle_state(self.view_options.branches_visible)
+                        .tooltip(Tooltip::text("Show or hide the branches panel"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.update_view_options(
+                                |options| options.branches_visible = !options.branches_visible,
+                                cx,
+                            )
+                        })),
+                )
+            })
             .child(
                 h_flex()
                     .h_8()
@@ -3630,7 +3871,7 @@ impl GitGraph {
         let mut lines: BTreeMap<usize, Vec<_>> = BTreeMap::new();
 
         let hovered_entry_idx = self.hovered_entry_idx;
-        let selected_entry_idx = self.selected_entry_idx;
+        let selected_rows = self.selection.snapshot(self.selected_entry_idx);
         let context_menu_target_index = self
             .context_menu
             .as_ref()
@@ -3658,7 +3899,7 @@ impl GitGraph {
                     for visible_row_idx in 0..rows.len() {
                         let absolute_row_idx = first_visible_row + visible_row_idx;
                         let is_hovered = hovered_entry_idx == Some(absolute_row_idx);
-                        let is_selected = selected_entry_idx == Some(absolute_row_idx);
+                        let is_selected = selected_rows.contains(absolute_row_idx);
                         let is_context_menu_target =
                             context_menu_target_index == Some(absolute_row_idx);
 
@@ -3869,7 +4110,7 @@ impl GitGraph {
 
                         // Match the node halo to the row's effective background so
                         // the ring blends seamlessly on hovered/selected rows.
-                        let node_background = if selected_entry_idx == Some(absolute_row_idx)
+                        let node_background = if selected_rows.contains(absolute_row_idx)
                             || context_menu_target_index == Some(absolute_row_idx)
                         {
                             background.blend(selected_bg)
@@ -3941,7 +4182,7 @@ impl GitGraph {
         // band painted behind the labels in the gutter lines up with the rest of
         // the row.
         let hovered_entry_idx = self.hovered_entry_idx;
-        let selected_entry_idx = self.selected_entry_idx;
+        let selected_rows = self.selection.snapshot(self.selected_entry_idx);
         let context_menu_entry_idx = self
             .context_menu
             .as_ref()
@@ -3958,7 +4199,7 @@ impl GitGraph {
         // the labels render on top of them.
         let mut elements = Vec::with_capacity(viewport_range.len());
         for absolute_idx in viewport_range.clone() {
-            let is_selected = selected_entry_idx == Some(absolute_idx)
+            let is_selected = selected_rows.contains(absolute_idx)
                 || context_menu_entry_idx == Some(absolute_idx);
             let is_hovered = hovered_entry_idx == Some(absolute_idx);
             if !is_selected && !is_hovered {
@@ -3992,39 +4233,16 @@ impl GitGraph {
             let visible_row_idx = absolute_idx - first_visible_row;
             let top = visible_row_idx as f32 * row_height - vertical_scroll_offset;
             let accent_color = accent_colors.color_for_index(commit.color_idx as u32);
-            let ref_names = commit.data.ref_names.clone();
-
-            // When a commit carries multiple refs we only render a single badge
-            // (preferring the checked-out branch, falling back to the first ref)
-            // plus a "+N" counter, so the gutter stays legible instead of
-            // cramming several truncated chips together.
-            let (primary_name, is_head) = match ref_names
-                .iter()
-                .find(|name| Self::is_head_ref(name.as_ref(), &head_branch_name))
-            {
-                Some(head_ref) => (head_ref.clone(), true),
-                None => match ref_names.first() {
-                    Some(first) => (first.clone(), false),
-                    None => continue,
-                },
-            };
-
-            let primary_chip = self.render_ref_chip(
-                primary_name.clone(),
-                accent_color,
-                is_head,
+            let Some((primary_chip, count_chip)) = self.ref_chips(
                 absolute_idx,
+                &commit.data.ref_names,
+                accent_color,
+                &head_branch_name,
                 background,
                 cx,
-            );
-
-            let hidden_refs = ref_names
-                .iter()
-                .filter(|name| *name != &primary_name)
-                .cloned()
-                .collect::<Vec<_>>();
-            let count_chip = (!hidden_refs.is_empty())
-                .then(|| self.render_ref_count_chip(hidden_refs, accent_color, absolute_idx, cx));
+            ) else {
+                continue;
+            };
 
             elements.push(
                 div()
@@ -4117,9 +4335,13 @@ impl GitGraph {
             focus_handle.focus(window, cx);
         }
 
-        self.select_entry(entry_idx, scroll_strategy, cx);
+        let pick = Pick::from_modifiers(event.modifiers(), cx);
+        let mut selection = std::mem::take(&mut self.selection);
+        let shown_idx = selection.click(entry_idx, self.selected_entry_idx, pick);
+        self.select_entry(shown_idx, scroll_strategy, cx);
+        self.selection = selection;
 
-        if event.click_count() >= 2 {
+        if event.click_count() >= 2 && pick == Pick::Single {
             self.open_commit_view(entry_idx, window, cx);
         }
     }
@@ -4494,7 +4716,7 @@ impl Render for GitGraph {
                         )
                         .child({
                             let row_height = Self::row_height(window, cx);
-                            let selected_entry_idx = self.selected_entry_idx;
+                            let selected_rows = self.selection.snapshot(self.selected_entry_idx);
                             let hovered_entry_idx = self.hovered_entry_idx;
                             let context_menu_target_index = self
                                 .context_menu
@@ -4522,7 +4744,7 @@ impl Render for GitGraph {
                                 .width_config(table_width_config)
                                 .column_filter(table_filter)
                                 .map_row(move |(index, row), window, cx| {
-                                    let is_selected = selected_entry_idx == Some(index);
+                                    let is_selected = selected_rows.contains(index);
                                     let is_hovered = hovered_entry_idx == Some(index);
                                     let is_context_menu_target =
                                         context_menu_target_index == Some(index);
@@ -4765,10 +4987,21 @@ impl Render for GitGraph {
                 cx.notify();
             }))
             .child(
-                v_flex()
+                h_flex()
                     .size_full()
-                    .child(self.render_search_bar(cx))
-                    .child(div().flex_1().child(content)),
+                    .when(
+                        !matches!(self.log_source, LogSource::Path(_))
+                            && self.view_options.branches_visible,
+                        |this| this.child(self.branches_sidebar.clone()),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .child(self.render_search_bar(cx))
+                            .child(div().flex_1().child(content)),
+                    ),
             )
             .children(self.context_menu.as_ref().map(|context_menu| {
                 deferred(

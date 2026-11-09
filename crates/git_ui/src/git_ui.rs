@@ -45,10 +45,17 @@ pub mod commit_view;
 mod conflict_view;
 mod diff_multibuffer;
 pub mod git_graph;
+mod git_graph_branches;
+mod git_graph_history;
+pub mod git_graph_panel;
+mod git_graph_push;
+mod git_graph_view_options;
 pub mod git_panel;
 mod git_panel_settings;
 pub mod git_picker;
 mod git_runtime_diagnostics;
+mod git_text_modal;
+mod local_git;
 pub mod multi_diff_view;
 pub mod picker_prompt;
 pub mod project_diff;
@@ -114,6 +121,7 @@ pub fn init(cx: &mut App) {
         branch_diff::BranchDiff::register(workspace, cx);
         CommitModal::register(workspace);
         git_panel::register(workspace);
+        git_graph_panel::register(workspace);
         repository_selector::register(workspace);
         git_picker::register(workspace);
 
@@ -1671,6 +1679,7 @@ mod view_commit_tests {
                 focus_handle,
                 Some(repository.downgrade()),
                 workspace_handle,
+                None,
                 window,
                 cx,
             )

@@ -184,6 +184,21 @@ impl RedistributableColumnsState {
         self.committed_widths = self.preview_widths.clone();
     }
 
+    /// Applies saved fractions. Resetting a column still returns to the initial widths.
+    pub fn restore_fractions(&mut self, fractions: &[f32]) {
+        if fractions.len() != self.cols() {
+            return;
+        }
+        let widths: TableRow<DefiniteLength> = fractions
+            .iter()
+            .copied()
+            .map(DefiniteLength::Fraction)
+            .collect::<Vec<_>>()
+            .into_table_row(self.cols());
+        self.committed_widths = widths.clone();
+        self.preview_widths = widths;
+    }
+
     pub fn reset_column_to_initial_width(&mut self, column_index: usize, window: &Window) {
         let bounds_width = self.cached_container_width;
         if bounds_width <= px(0.) {
@@ -303,6 +318,7 @@ impl RedistributableColumnsState {
         );
 
         self.preview_widths = widths.map(DefiniteLength::Fraction);
+        cx.notify();
     }
 
     /// Computes the preview column fractions produced by dragging the divider after `col_idx`
@@ -578,8 +594,9 @@ pub fn bind_redistributable_columns(
             }
         })
         .on_drop::<DraggedColumn>(move |_, _, cx| {
-            columns_state.update(cx, |columns, _| {
+            columns_state.update(cx, |columns, cx| {
                 columns.commit_preview();
+                cx.notify();
             });
         })
 }
@@ -629,7 +646,10 @@ pub fn render_redistributable_columns_resize_handles(
         };
         let on_drag_end: Option<Rc<dyn Fn(&mut App)>> = {
             Some(Rc::new(move |cx| {
-                columns_state.update(cx, |state, _| state.commit_preview());
+                columns_state.update(cx, |state, cx| {
+                    state.commit_preview();
+                    cx.notify();
+                });
             }))
         };
         children.push(render_column_resize_divider(

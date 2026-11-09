@@ -192,7 +192,7 @@ impl Addon for CommitDiffAddon {
         .when_some(
             apply_target,
             |menu, (sha, file_path, repository, workspace)| {
-                commit_file_apply_entries(menu, sha, file_path, repository, workspace)
+                commit_file_apply_entries(menu, sha, file_path, repository, workspace, cx)
             },
         )
     }

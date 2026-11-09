@@ -1,4 +1,9 @@
-use crate::{commit_view::CommitView, create_tag_at_commit};
+use crate::{
+    commit_view::CommitView,
+    create_tag_at_commit,
+    git_graph_history::{HistoryTarget, history_entries},
+    local_git::{local_repo, queue_git_job},
+};
 use editor::file_path_menu_entries;
 use git::{Oid, repository::RepoPath};
 use git_ops::Direction;
@@ -43,6 +48,7 @@ pub(crate) fn commit_context_menu(
     focus_handle: FocusHandle,
     repository: Option<WeakEntity<Repository>>,
     workspace: WeakEntity<Workspace>,
+    history: Option<HistoryTarget>,
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<ContextMenu> {
@@ -146,6 +152,7 @@ pub(crate) fn commit_context_menu(
                         .log_err();
                 }
             })
+            .when_some(history, history_entries)
             .when(source == CommitContextMenuSource::GitPanel, |menu| {
                 menu.entry("Show in Git Graph", None, move |window, cx| {
                     window.dispatch_action(
@@ -245,7 +252,7 @@ pub(crate) fn commit_file_context_menu(
         }
         None => menu,
     };
-    commit_file_apply_entries(menu, sha, file_path, repository.downgrade(), workspace)
+    commit_file_apply_entries(menu, sha, file_path, repository.downgrade(), workspace, cx)
 }
 
 pub(crate) fn commit_file_apply_entries(
@@ -254,7 +261,15 @@ pub(crate) fn commit_file_apply_entries(
     file_path: RepoPath,
     repository: WeakEntity<Repository>,
     workspace: WeakEntity<Workspace>,
+    cx: &App,
 ) -> ContextMenu {
+    let is_local = repository
+        .upgrade()
+        .and_then(|repository| repository.read(cx).git_store())
+        .is_some_and(|git_store| git_store.read(cx).is_local());
+    if !is_local {
+        return menu;
+    }
     [
         ("Cherry-pick File to Working Tree", Direction::Apply),
         ("Revert File in Working Tree", Direction::Revert),
@@ -266,15 +281,21 @@ pub(crate) fn commit_file_apply_entries(
         let repository = repository.clone();
         let workspace = workspace.clone();
         menu.entry(label, None, move |window, cx| {
-            let Some(repository) = repository.upgrade() else {
+            let Some((repository, repo)) = repository.upgrade().and_then(|repository| {
+                let repo = local_repo(&repository, cx)?;
+                Some((repository, repo))
+            }) else {
                 return;
             };
-            let repo_dir = repository.read(cx).work_directory_abs_path.clone();
             let sha = sha.clone();
             let file_path = file_path.as_unix_str().to_string();
-            cx.background_spawn(async move {
-                git_ops::apply_commit_file(&repo_dir, &sha, &file_path, direction).await
-            })
+            queue_git_job(
+                &repository,
+                "apply commit file",
+                "Applying file changes…",
+                async move { git_ops::apply_commit_file(&repo, &sha, &file_path, direction).await },
+                cx,
+            )
             .detach_and_notify_err(workspace.clone(), window, cx);
         })
     })

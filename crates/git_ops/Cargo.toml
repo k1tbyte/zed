@@ -15,8 +15,8 @@ doctest = false
 [dependencies]
 anyhow.workspace = true
 futures.workspace = true
+tempfile.workspace = true
 util.workspace = true
 
 [dev-dependencies]
 smol.workspace = true
-tempfile.workspace = true
