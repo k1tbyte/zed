@@ -32,6 +32,7 @@ mod git;
 mod highlight_matching_bracket;
 pub mod hover_links;
 pub mod hover_popover;
+mod hungry_backspace;
 mod indent_guides;
 mod inlays;
 mod inline_input;
