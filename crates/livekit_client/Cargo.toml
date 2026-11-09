@@ -17,7 +17,7 @@ doctest = false
 name = "test_app"
 
 [features]
-test-support = ["collections/test-support", "gpui/test-support", "livekit_api/test-support", "dep:nanoid", "dep:postage"]
+test-support = ["collections/test-support", "gpui/test-support", "livekit_api/test-support"]
 
 [dependencies]
 anyhow.workspace = true
@@ -30,11 +30,11 @@ gpui = { workspace = true, features = ["screen-capture", "x11", "wayland"] }
 gpui_tokio.workspace = true
 http_client_tls.workspace = true
 image.workspace = true
-livekit_api = { workspace = true, optional = true }
+livekit_api.workspace = true
 log.workspace = true
-nanoid = { workspace = true, optional = true }
+nanoid.workspace = true
 parking_lot.workspace = true
-postage = { workspace = true, optional = true, features = ["futures-traits", "logging", "blocking"] }
+postage = { workspace = true, features = ["futures-traits", "logging", "blocking"] }
 rodio.workspace = true
 serde.workspace = true
 serde_urlencoded.workspace = true
@@ -42,27 +42,6 @@ settings.workspace = true
 smallvec.workspace = true
 ui.workspace = true
 util.workspace = true
-
-[target.'cfg(any(all(target_os = "windows", target_env = "gnu"), target_os = "freebsd"))'.dependencies]
-livekit_api.workspace = true
-nanoid.workspace = true
-postage = { workspace = true, features = ["futures-traits", "logging", "blocking"] }
-
-[target.'cfg(not(any(all(target_os = "windows", target_env = "gnu"), target_os = "freebsd")))'.dependencies]
-libwebrtc.workspace = true
-livekit.workspace = true
-
-[target.'cfg(target_os = "linux")'.dependencies]
-tokio = { workspace = true, features = ["time"] }
-webrtc-sys.workspace = true
-
-[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "windows"))'.dependencies]
-scap.workspace = true
-
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2-core-foundation = { workspace = true, features = ["CFDictionary", "CFNumber"] }
-objc2-core-video = { workspace = true, features = ["CVBase", "CVPixelBuffer", "CVPixelBufferIOSurface", "CVPixelBufferPool", "CVReturn"] }
-coreaudio-rs = { workspace = true, features = ["core_audio"] }
 
 [dev-dependencies]
 collections = { workspace = true, features = ["test-support"] }

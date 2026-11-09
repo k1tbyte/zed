@@ -304,15 +304,6 @@ fn compute_network_stats(stats: &livekit_client::SessionStats) -> ComputedNetwor
     }
 }
 
-#[cfg(all(
-    not(rust_analyzer),
-    any(
-        test,
-        feature = "test-support",
-        all(target_os = "windows", target_env = "gnu"),
-        target_os = "freebsd"
-    )
-))]
 fn compute_remote_audio_stats(
     _stats: &livekit_client::SessionStats,
     _remote_tracks: &[TrackContext],
@@ -324,15 +315,8 @@ fn compute_remote_audio_stats(
     (Vec::new(), previous_inbound)
 }
 
-#[cfg(any(
-    rust_analyzer,
-    not(any(
-        test,
-        feature = "test-support",
-        all(target_os = "windows", target_env = "gnu"),
-        target_os = "freebsd"
-    ))
-))]
+// Fork: the WebRTC stats code is not built, see `livekit_client`.
+#[cfg(any())]
 fn compute_remote_audio_stats(
     stats: &livekit_client::SessionStats,
     remote_tracks: &[TrackContext],
@@ -457,15 +441,6 @@ fn compute_remote_audio_stats(
     (diagnostics, next_inbound)
 }
 
-#[cfg(all(
-    not(rust_analyzer),
-    any(
-        test,
-        feature = "test-support",
-        all(target_os = "windows", target_env = "gnu"),
-        target_os = "freebsd"
-    )
-))]
 fn extract_metrics(
     _stat: &livekit_client::RtcStats,
     _min_rtt: &mut Option<f64>,
@@ -475,15 +450,7 @@ fn extract_metrics(
 ) {
 }
 
-#[cfg(any(
-    rust_analyzer,
-    not(any(
-        test,
-        feature = "test-support",
-        all(target_os = "windows", target_env = "gnu"),
-        target_os = "freebsd"
-    ))
-))]
+#[cfg(any())]
 fn extract_metrics(
     stat: &livekit_client::RtcStats,
     min_rtt: &mut Option<f64>,
