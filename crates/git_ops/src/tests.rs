@@ -360,3 +360,59 @@ fn default_remote_prefers_origin_then_any_configured_remote() -> Result<()> {
     assert_eq!(smol::block_on(default_remote(&repo(repo_dir)))?, "origin");
     Ok(())
 }
+
+#[test]
+fn untracking_keeps_the_file_on_disk_and_stages_its_removal() -> Result<()> {
+    let (temp, _) = repo_with_two_commits()?;
+    let repo_dir = temp.path();
+
+    smol::block_on(untrack(&repo(repo_dir), &["a.txt".to_string()]))?;
+
+    assert_eq!(read(repo_dir, "a.txt")?, "1\ntwo\n3\n");
+    let status = run(repo_dir, &["status", "--porcelain"])?;
+    assert!(status.contains("D  a.txt"), "{status}");
+    assert!(status.contains("?? a.txt"), "{status}");
+    assert!(!status.contains("b.txt"), "{status}");
+    Ok(())
+}
+
+#[test]
+fn untracking_a_folder_skips_files_git_does_not_know() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let repo_dir = temp.path();
+    run(repo_dir, &["init", "-q"])?;
+    configure_identity(repo_dir)?;
+    fs::create_dir(repo_dir.join("dir"))?;
+    write(repo_dir, "dir/tracked.txt", "t")?;
+    run(repo_dir, &["add", "."])?;
+    run(repo_dir, &["commit", "-qm", "one"])?;
+    write(repo_dir, "dir/new.txt", "n")?;
+
+    smol::block_on(untrack(&repo(repo_dir), &["dir".to_string()]))?;
+    smol::block_on(untrack(&repo(repo_dir), &["dir/new.txt".to_string()]))?;
+
+    assert!(repo_dir.join("dir/tracked.txt").exists());
+    assert_eq!(
+        run(repo_dir, &["ls-files"])?,
+        "",
+        "nothing is tracked anymore"
+    );
+    Ok(())
+}
+
+#[test]
+fn untracking_takes_glob_characters_literally() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let repo_dir = temp.path();
+    run(repo_dir, &["init", "-q"])?;
+    configure_identity(repo_dir)?;
+    write(repo_dir, "a.txt", "a")?;
+    write(repo_dir, "[ab].txt", "x")?;
+    run(repo_dir, &["add", "."])?;
+    run(repo_dir, &["commit", "-qm", "one"])?;
+
+    smol::block_on(untrack(&repo(repo_dir), &["[ab].txt".to_string()]))?;
+
+    assert_eq!(run(repo_dir, &["ls-files"])?, "a.txt");
+    Ok(())
+}

@@ -1,14 +1,13 @@
 //! Where `git_ops` work meets a `Repository`: whether it may run, and how it is queued.
 
+use anyhow::anyhow;
+use git::repository::RepoPath;
 use gpui::{App, AppContext as _, Entity, SharedString, Task};
 use project::git_store::Repository;
 use std::future::Future;
 
 /// None for remote and collab projects, where the host's path is no checkout on this machine.
-pub(crate) fn local_repo(
-    repository: &Entity<Repository>,
-    cx: &mut App,
-) -> Option<git_ops::LocalRepo> {
+pub fn local_repo(repository: &Entity<Repository>, cx: &mut App) -> Option<git_ops::LocalRepo> {
     let (id, dir, git_store) = {
         let repository = repository.read(cx);
         (
@@ -26,7 +25,7 @@ pub(crate) fn local_repo(
 }
 
 /// Runs `work` behind the repository's own jobs, so it cannot overlap a Git panel operation.
-pub(crate) fn queue_git_job(
+pub fn queue_git_job(
     repository: &Entity<Repository>,
     job: &'static str,
     status: impl Into<SharedString>,
@@ -41,6 +40,34 @@ pub(crate) fn queue_git_job(
     cx.spawn(async move |_| {
         queued
             .await
-            .map_err(|_| anyhow::anyhow!("Operation was canceled"))?
+            .map_err(|_| anyhow!("Operation was canceled"))?
     })
+}
+
+/// Removes `paths` from the index and keeps them on disk. Needs a local project.
+pub fn stop_tracking(
+    repository: &Entity<Repository>,
+    paths: &[RepoPath],
+    cx: &mut App,
+) -> Task<anyhow::Result<()>> {
+    let Some(local) = local_repo(repository, cx) else {
+        return Task::ready(Err(anyhow!("Only available in local projects")));
+    };
+    // An empty path is a repository root, such as a nested repository's folder: that would
+    // untrack the whole repository (or be an invalid pathspec), never what a click on a folder means.
+    let paths: Vec<String> = paths
+        .iter()
+        .filter(|path| !path.is_empty())
+        .map(|path| path.as_unix_str().to_string())
+        .collect();
+    if paths.is_empty() {
+        return Task::ready(Ok(()));
+    }
+    queue_git_job(
+        repository,
+        "stop tracking",
+        "Stopping tracking…",
+        async move { git_ops::untrack(&local, &paths).await },
+        cx,
+    )
 }

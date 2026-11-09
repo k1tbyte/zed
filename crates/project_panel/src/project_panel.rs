@@ -1266,6 +1266,9 @@ impl ProjectPanel {
                                         "Add to .git/info/exclude",
                                         Box::new(git::AddToGitInfoExclude),
                                     )
+                                    .when(self.may_be_tracked(entry_id, is_dir), |menu| {
+                                        menu.action("Stop Tracking", Box::new(git::StopTracking))
+                                    })
                                     .when(has_history, |menu| {
                                         menu.action("View History", Box::new(git::FileHistory))
                                     })
@@ -1433,6 +1436,16 @@ impl ProjectPanel {
             point(viewport.left(), viewport.top() + offset.y + row_top),
             size(viewport.size.width, row_height),
         ))
+    }
+
+    /// Folders always qualify, files unless Git reports them as new. Ignore rules do not count,
+    /// since a file that was tracked before it got ignored is the main use for this.
+    fn may_be_tracked(&self, entry_id: ProjectEntryId, is_dir: bool) -> bool {
+        self.state
+            .visible_entries
+            .iter()
+            .find_map(|visible| visible.entries.iter().find(|entry| entry.id == entry_id))
+            .is_some_and(|entry| is_dir || entry.git_summary.untracked == 0)
     }
 
     fn has_git_changes(&self, entry_id: ProjectEntryId) -> bool {
@@ -2825,6 +2838,47 @@ impl ProjectPanel {
 
             Some(())
         });
+    }
+
+    fn stop_tracking(
+        &mut self,
+        _: &git::StopTracking,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut targets = Vec::<(_, Vec<_>)>::new();
+        {
+            let project = self.project.read(cx);
+            let git_store = project.git_store().read(cx);
+            for entry in self.disjoint_effective_entries_excluding_roots(cx) {
+                let Some(project_path) = project.path_for_entry(entry.entry_id, cx) else {
+                    continue;
+                };
+                let Some((repository, repo_path)) =
+                    git_store.repository_and_path_for_project_path(&project_path, cx)
+                else {
+                    continue;
+                };
+                match targets.iter_mut().find(|(known, _)| *known == repository) {
+                    Some((_, paths)) => paths.push(repo_path),
+                    None => targets.push((repository, vec![repo_path])),
+                }
+            }
+        }
+
+        for (repository, paths) in targets {
+            let task = git_ui_core::local_git::stop_tracking(&repository, &paths, cx);
+            let workspace = self.workspace.clone();
+            cx.spawn(async move |_, cx| {
+                if let Err(error) = task.await {
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.show_error(format!("Failed to stop tracking: {error}"), cx);
+                    })?;
+                }
+                anyhow::Ok(())
+            })
+            .detach_and_log_err(cx);
+        }
     }
 
     /// Builds the confirmation prompt shared by direct removal and undo/redo.
@@ -7707,6 +7761,7 @@ impl Render for ProjectPanel {
                         .on_action(cx.listener(Self::restore_file))
                         .on_action(cx.listener(Self::add_to_gitignore))
                         .on_action(cx.listener(Self::add_to_git_info_exclude))
+                        .on_action(cx.listener(Self::stop_tracking))
                         .when(!is_collab, |el| el.on_action(cx.listener(Self::trash)))
                         .when(!is_collab, |el| {
                             el.on_action(cx.listener(Self::undo))

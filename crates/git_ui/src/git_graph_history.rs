@@ -7,8 +7,9 @@ mod selection;
 pub(crate) use menu::{history_entries, selection_menu};
 pub(crate) use selection::{Pick, RowSelection};
 
-use crate::{git_graph_branches::BranchesSidebar, local_git::local_repo};
+use crate::git_graph_branches::BranchesSidebar;
 use git::{Oid, repository::InitialGraphCommitData};
+use git_ui_core::local_git::local_repo;
 use gpui::{App, Entity, WeakEntity};
 use project::git_store::Repository;
 use std::{rc::Rc, str::FromStr as _};

@@ -2,11 +2,11 @@ use super::HistoryTarget;
 use crate::{
     git_graph_branches::{GitOperation, new_branch_from_ref},
     git_text_modal::TextModal,
-    local_git::{local_repo, queue_git_job},
 };
 use anyhow::anyhow;
 use git::repository::ResetMode;
 use git_ops::Rewrite;
+use git_ui_core::local_git::{local_repo, queue_git_job};
 use gpui::{App, AppContext as _, ClipboardItem, PromptLevel, Window};
 use std::future::Future;
 use util::ResultExt as _;

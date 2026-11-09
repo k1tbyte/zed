@@ -55,7 +55,6 @@ mod git_panel_settings;
 pub mod git_picker;
 mod git_runtime_diagnostics;
 mod git_text_modal;
-mod local_git;
 pub mod multi_diff_view;
 pub mod picker_prompt;
 pub mod project_diff;

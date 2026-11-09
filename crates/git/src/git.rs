@@ -143,6 +143,8 @@ actions!(
         AddToGitignore,
         /// Adds a file to the repository's .git/info/exclude.
         AddToGitInfoExclude,
+        /// Removes a file from Git's index and keeps it on disk.
+        StopTracking,
         /// Copies the current branch name to the clipboard.
         CopyBranchName,
         /// Creates a tag at HEAD.

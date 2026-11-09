@@ -189,6 +189,22 @@ pub async fn commit_files(repo: &LocalRepo, sha: &str) -> Result<Vec<ChangedFile
     Ok(files)
 }
 
+/// Removes paths from the index and keeps them on disk. Untracked paths are skipped.
+pub async fn untrack(repo: &LocalRepo, paths: &[String]) -> Result<()> {
+    let mut args = vec![
+        "--literal-pathspecs",
+        "rm",
+        "--cached",
+        "-r",
+        "-q",
+        "--ignore-unmatch",
+        "--",
+    ];
+    args.extend(paths.iter().map(String::as_str));
+    git(repo, &args, &[]).await?;
+    Ok(())
+}
+
 async fn git_apply(repo: &LocalRepo, flags: &[&str], patch: &[u8]) -> Result<()> {
     let args = [&["apply"], flags, &["-"]].concat();
     git(repo, &args, patch).await?;

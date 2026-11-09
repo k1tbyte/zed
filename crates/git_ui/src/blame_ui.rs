@@ -251,7 +251,7 @@ impl BlameRenderer for GitBlameRenderer {
                                     repository.downgrade(),
                                     workspace.clone(),
                                     None,
-                                    None,
+                                    blamed_file(&blame_entry),
                                     window,
                                     cx,
                                 )
@@ -317,6 +317,7 @@ impl BlameRenderer for GitBlameRenderer {
             .unwrap_or(OffsetDateTime::now_utc());
 
         let sha = blame.sha.to_string().into();
+        let blamed_file = blamed_file(&blame);
         let author: SharedString = blame
             .author
             .clone()
@@ -492,7 +493,7 @@ impl BlameRenderer for GitBlameRenderer {
                                                         repository.downgrade(),
                                                         workspace.clone(),
                                                         None,
-                                                        None,
+                                                        blamed_file.clone(),
                                                         window,
                                                         cx,
                                                     );
@@ -525,7 +526,7 @@ impl BlameRenderer for GitBlameRenderer {
             repository.downgrade(),
             workspace,
             None,
-            None,
+            blamed_file(&blame_entry),
             window,
             cx,
         )
@@ -544,6 +545,11 @@ impl BlameRenderer for GitBlameRenderer {
     }
 }
 
+/// The commit view then shows only this file's changes, not everything the commit touched.
+pub(crate) fn blamed_file(blame_entry: &BlameEntry) -> Option<RepoPath> {
+    RepoPath::new(&blame_entry.filename).ok()
+}
+
 fn deploy_blame_entry_context_menu(
     blame_entry: &BlameEntry,
     details: Option<&ParsedCommitMessage>,
@@ -560,12 +566,29 @@ fn deploy_blame_entry_context_menu(
         .and_then(|blame| blame.read(cx).highlighted_sha());
     let context_menu = ContextMenu::build(window, cx, move |menu, _, _| {
         let sha = format!("{}", blame_entry.sha);
+        let full_sha = sha.clone();
         let blame_revision = blame_entry.revision_target(highlighted_sha);
         let blame_previous_revision = blame_entry.previous_revision_target();
         let has_blame_targets = blame_revision.is_some() || blame_previous_revision.is_some();
         menu.on_blur_subscription(Subscription::new(|| {}))
             .entry("Copy Commit SHA", None, move |_, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(sha.clone()));
+            })
+            .entry("Open Full Commit", None, {
+                let sha = full_sha;
+                let repository = repository.clone();
+                let workspace = workspace.clone();
+                move |window, cx| {
+                    CommitView::open(
+                        sha.clone(),
+                        repository.downgrade(),
+                        workspace.clone(),
+                        None,
+                        None,
+                        window,
+                        cx,
+                    )
+                }
             })
             .when_some(
                 details.and_then(|details| details.permalink.clone()),

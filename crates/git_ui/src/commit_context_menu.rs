@@ -2,11 +2,11 @@ use crate::{
     commit_view::CommitView,
     create_tag_at_commit,
     git_graph_history::{HistoryTarget, history_entries},
-    local_git::{local_repo, queue_git_job},
 };
 use editor::file_path_menu_entries;
 use git::{Oid, repository::RepoPath};
 use git_ops::Direction;
+use git_ui_core::local_git::{local_repo, queue_git_job};
 use gpui::{Action, ClipboardItem, Entity, FocusHandle, SharedString, WeakEntity, Window, actions};
 use project::{GIT_COMMAND_TASK_TAG, git_store::Repository};
 

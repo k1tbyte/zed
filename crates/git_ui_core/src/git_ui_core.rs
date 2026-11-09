@@ -10,6 +10,7 @@ use workspace::Workspace;
 pub mod askpass_modal;
 pub mod created_worktrees;
 pub mod file_diff_view;
+pub mod local_git;
 pub mod notifications;
 pub mod worktree_names;
 pub mod worktree_picker;
