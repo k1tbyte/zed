@@ -1,0 +1,100 @@
+# Unsigned builds of this fork for macOS (Apple silicon) and Windows (x64), made with the
+# scripts upstream uses (they skip signing and Sentry when the secrets are missing).
+#
+# Push a tag named `fork-v*` to build both and attach them to a GitHub release, or run the
+# workflow by hand once this file is on the default branch to get the files as artifacts.
+name: fork_release
+
+on:
+  push:
+    tags:
+      - fork-v*
+  workflow_dispatch:
+    inputs:
+      macos:
+        description: Build for macOS
+        type: boolean
+        default: true
+      windows:
+        description: Build for Windows
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+  # A free runner has neither the memory nor the hours for upstream's thin LTO build.
+  CARGO_PROFILE_RELEASE_LTO: "off"
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+  CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
+
+jobs:
+  bundle_mac:
+    if: github.event_name == 'push' || inputs.macos
+    runs-on: macos-14
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show disk space
+        run: df -h /
+      - name: Bundle
+        run: ./script/bundle-mac aarch64-apple-darwin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Zed-aarch64.dmg
+          path: target/aarch64-apple-darwin/release/Zed-aarch64.dmg
+          if-no-files-found: error
+
+  bundle_windows:
+    if: github.event_name == 'push' || inputs.windows
+    runs-on: windows-2022
+    timeout-minutes: 360
+    env:
+      ZED_WORKSPACE: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      # The workspace is on the small D: drive, a release build does not fit there.
+      - name: Put target on the C drive
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path C:\zed-target -Force | Out-Null
+          cmd /c mklink /J target C:\zed-target
+      - name: Set release version
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path crates/zed/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+      - name: Bundle
+        shell: pwsh
+        run: script/bundle-windows.ps1 -Architecture x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Zed-x86_64.exe
+          path: target/Zed-x86_64.exe
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name == 'push'
+    needs: [bundle_mac, bundle_windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: bundles
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" bundles/*/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Unsigned fork build. On macOS run \`xattr -cr /Applications/Zed.app\` after installing."
