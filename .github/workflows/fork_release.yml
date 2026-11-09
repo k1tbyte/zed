@@ -38,12 +38,15 @@ env:
 jobs:
   bundle_mac:
     if: github.event_name == 'push' || inputs.macos
-    runs-on: macos-14
+    runs-on: macos-latest
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
-      - name: Show disk space
-        run: df -h /
+      - name: Show the toolchain and disk space
+        run: |
+          sw_vers
+          xcodebuild -version
+          df -h /
       - name: Bundle
         run: ./script/bundle-mac aarch64-apple-darwin
       - uses: actions/upload-artifact@v4
@@ -66,6 +69,12 @@ jobs:
         run: |
           New-Item -ItemType Directory -Path C:\zed-target -Force | Out-Null
           cmd /c mklink /J target C:\zed-target
+      # The script looks for Visual Studio Community, the runner image has Enterprise.
+      - name: Point the script at Visual Studio
+        shell: pwsh
+        run: |
+          $vs = "C:\Program Files\Microsoft Visual Studio\2022"
+          if (-not (Test-Path "$vs\Community")) { cmd /c mklink /J "$vs\Community" "$vs\Enterprise" }
       - name: Set release version
         shell: pwsh
         run: |
