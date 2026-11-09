@@ -6,14 +6,15 @@ use gpui::{MouseButton, SharedString, Task, TaskExt, WeakEntity};
 use itertools::Itertools;
 use language::{BufferId, ClientCommand};
 use multi_buffer::{Anchor, BufferOffset, MultiBufferRow, MultiBufferSnapshot, ToPoint as _};
-use project::{CodeAction, TaskSourceKind, lsp_store::code_lens::CodeLensActions};
+use project::{CodeAction, LocationLink, TaskSourceKind, lsp_store::code_lens::CodeLensActions};
+use settings::{OpenResultsIn, Settings as _};
 use task::TaskContext;
 use text::ToOffset as _;
 
 use ui::{Context, Window, div, prelude::*};
 
 use crate::{
-    Editor, LSP_REQUEST_DEBOUNCE_TIMEOUT, SelectionEffects,
+    Editor, EditorSettings, GotoDefinitionKind, LSP_REQUEST_DEBOUNCE_TIMEOUT, SelectionEffects,
     actions::ToggleCodeLens,
     display_map::{BlockPlacement, BlockProperties, BlockStyle, CustomBlockId, RenderBlock},
     hover_links::HoverLink,
@@ -198,7 +199,43 @@ fn try_show_references(
     }
 
     let server_id = action.server_id;
-    let nav_entry = editor.navigation_entry(editor.selections.newest_anchor().head(), cx);
+    let position = editor.selections.newest_anchor().head();
+    let nav_entry = editor.navigation_entry(position, cx);
+    // Fork: honor `lsp_results_location`, upstream always opens a multibuffer here.
+    if EditorSettings::get_global(cx).lsp_results_location == OpenResultsIn::Picker {
+        let targets = locations
+            .into_iter()
+            .map(|location| editor.compute_target_location(location, server_id, window, cx))
+            .collect::<Vec<_>>();
+        cx.spawn_in(window, async move |editor, cx| {
+            let links = join_all(targets)
+                .await
+                .into_iter()
+                .filter_map(|target| target.transpose())
+                .map(|target| {
+                    target.map(|target| {
+                        HoverLink::Text(LocationLink {
+                            origin: None,
+                            target,
+                        })
+                    })
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            editor.update_in(cx, |editor, window, cx| {
+                editor.reveal_clicked_links(
+                    GotoDefinitionKind::Symbol,
+                    links,
+                    position,
+                    nav_entry,
+                    false,
+                    window,
+                    cx,
+                )
+            })
+        })
+        .detach_and_log_err(cx);
+        return true;
+    }
     let links = locations
         .into_iter()
         .map(|location| HoverLink::LspLocation(location, server_id))

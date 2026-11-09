@@ -2441,7 +2441,7 @@ impl Editor {
         })
     }
 
-    fn compute_target_location(
+    pub(crate) fn compute_target_location(
         &self,
         lsp_location: lsp::Location,
         server_id: LanguageServerId,
