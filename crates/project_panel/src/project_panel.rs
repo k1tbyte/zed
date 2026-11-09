@@ -1,4 +1,5 @@
 pub mod project_panel_settings;
+mod scope;
 mod undo;
 mod utils;
 
@@ -88,6 +89,7 @@ use zed_actions::{
 
 use crate::{
     project_panel_settings::ProjectPanelScrollbarProxy,
+    scope::ScopeToFolder,
     undo::{Change, UndoManager, already_exists_error, project_path_display},
 };
 
@@ -167,6 +169,7 @@ pub struct ProjectPanel {
     update_visible_entries_task: UpdateVisibleEntriesTask,
     undo_manager: UndoManager,
     state: State,
+    scope: Option<(WorktreeId, ProjectEntryId)>,
 }
 
 struct UpdateVisibleEntriesTask {
@@ -742,7 +745,9 @@ impl ProjectPanel {
                 window,
                 |this, project, event, window, cx| match event {
                     project::Event::ActiveEntryChanged(Some(entry_id)) => {
-                        if ProjectPanelSettings::get_global(cx).auto_reveal_entries {
+                        if ProjectPanelSettings::get_global(cx).auto_reveal_entries
+                            && this.scope_contains(*entry_id, cx)
+                        {
                             this.reveal_entry(project.clone(), *entry_id, true, window, cx)
                                 .ok();
                         }
@@ -761,6 +766,9 @@ impl ProjectPanel {
                         }
                     }
                     project::Event::RevealInProjectPanel(entry_id) => {
+                        if !this.scope_contains(*entry_id, cx) {
+                            this.reset_scope(&scope::ResetScope, window, cx);
+                        }
                         if let Some(()) = this
                             .reveal_entry(project.clone(), *entry_id, false, window, cx)
                             .log_err()
@@ -928,6 +936,7 @@ impl ProjectPanel {
                     project.read(cx).is_via_collab(),
                     &cx,
                 ),
+                scope: None,
             };
             this.update_visible_entries(None, false, false, window, cx);
 
@@ -1220,6 +1229,9 @@ impl ProjectPanel {
                             .when(is_dir, |menu| {
                                 menu.separator()
                                     .action("Find in Folder…", Box::new(NewSearchInDirectory))
+                            })
+                            .when(is_dir && !is_root, |menu| {
+                                menu.action("Scope to This Folder", Box::new(ScopeToFolder))
                             })
                             .when(is_unfoldable, |menu| {
                                 menu.action("Unfold Directory", Box::new(UnfoldDirectory))
@@ -1591,6 +1603,7 @@ impl ProjectPanel {
                 Ok(_) | Err(_) => {
                     if let Some(parent_entry) =
                         entry.path.parent().and_then(|p| worktree.entry_for_path(p))
+                        && self.scope.is_none_or(|(_, scope_id)| scope_id != entry_id)
                     {
                         entry = parent_entry;
                     } else {
@@ -1668,6 +1681,9 @@ impl ProjectPanel {
     ) {
         for (worktree_id, root_id) in roots {
             self.collapse_worktree_expanded_dirs(worktree_id, root_id, cx);
+        }
+        if let Some((worktree_id, entry_id)) = self.scope {
+            self.expand_entry(worktree_id, entry_id, cx);
         }
 
         self.update_visible_entries(None, false, false, window, cx);
@@ -3570,7 +3586,9 @@ impl ProjectPanel {
         if let Some((worktree, entry)) = self.selected_sub_entry(cx) {
             if let Some(parent) = entry.path.parent() {
                 let worktree = worktree.read(cx);
-                if let Some(parent_entry) = worktree.entry_for_path(parent) {
+                if let Some(parent_entry) = worktree.entry_for_path(parent)
+                    && self.scope_contains(parent_entry.id, cx)
+                {
                     self.selection = Some(SelectedEntry {
                         worktree_id: worktree.id(),
                         entry_id: parent_entry.id,
@@ -4670,23 +4688,28 @@ impl ProjectPanel {
         let hide_gitignore = settings.hide_gitignore;
         let sort_mode = settings.sort_mode;
         let sort_order = settings.sort_order;
+        let scope = self.scope_entry(cx);
         let project = self.project.read(cx);
         let repo_snapshots = project.git_store().read(cx).display_repo_snapshots(cx);
 
         let old_ancestors = self.state.ancestors.clone();
         let temporary_unfolded_pending_state = self.state.temporarily_unfolded_pending_state.take();
         let mut new_state = State::derive(&self.state);
-        new_state.last_worktree_root_id = project
-            .visible_worktrees(cx)
-            .next_back()
-            .and_then(|worktree| worktree.read(cx).root_entry())
-            .map(|entry| entry.id);
+        new_state.last_worktree_root_id = scope.as_ref().map(|(_, entry)| entry.id).or_else(|| {
+            project
+                .visible_worktrees(cx)
+                .next_back()
+                .and_then(|worktree| worktree.read(cx).root_entry())
+                .map(|entry| entry.id)
+        });
         let mut max_width_item = None;
 
         let visible_worktrees: Vec<_> = project
             .visible_worktrees(cx)
             .map(|worktree| worktree.read(cx).snapshot())
+            .filter(|worktree| scope.as_ref().is_none_or(|(id, _)| *id == worktree.id()))
             .collect();
+        let scope_path = scope.map(|(_, entry)| entry.path);
         let hide_root = settings.hide_root && visible_worktrees.len() == 1;
         let hide_hidden = settings.hide_hidden;
 
@@ -4711,11 +4734,24 @@ impl ProjectPanel {
                         }
 
                         let mut visible_worktree_entries = Vec::new();
-                        let mut entry_iter =
-                            GitTraversal::new(&repo_snapshots, worktree_snapshot.entries(true, 0));
+                        let mut entry_iter = GitTraversal::new(
+                            &repo_snapshots,
+                            match &scope_path {
+                                Some(path) => {
+                                    worktree_snapshot.traverse_from_path(true, true, true, path)
+                                }
+                                None => worktree_snapshot.entries(true, 0),
+                            },
+                        );
                         let mut auto_folded_ancestors = vec![];
                         let worktree_abs_path = worktree_snapshot.abs_path();
                         while let Some(entry) = entry_iter.entry() {
+                            if scope_path
+                                .as_ref()
+                                .is_some_and(|path| !entry.path.starts_with(path))
+                            {
+                                break;
+                            }
                             if hide_root && Some(entry.entry) == worktree_snapshot.root_entry() {
                                 if new_entry_parent_id == Some(entry.id) {
                                     visible_worktree_entries.push(Self::create_new_git_entry(
@@ -4737,6 +4773,7 @@ impl ProjectPanel {
                                         worktree_snapshot.child_entries(&entry.path);
                                     if let Some(child) = child_entries.next()
                                         && entry.path != root_path.path
+                                        && scope_path.as_ref() != Some(&entry.path)
                                         && child_entries.next().is_none()
                                         && child.kind.is_dir()
                                     {
@@ -5827,6 +5864,13 @@ impl ProjectPanel {
         predicate: &dyn Fn(GitEntryRef, WorktreeId) -> bool,
         cx: &mut Context<Self>,
     ) -> Option<SelectedEntry> {
+        let scope_path = self.scope_path(cx);
+        let predicate = &|entry: GitEntryRef, worktree_id| {
+            predicate(entry, worktree_id)
+                && scope_path
+                    .as_ref()
+                    .is_none_or(|path| entry.path.starts_with(path))
+        };
         let mut worktree_ids: Vec<_> = self
             .state
             .visible_entries
@@ -7749,6 +7793,9 @@ impl Render for ProjectPanel {
                 .on_action(cx.listener(Self::remove_from_project))
                 .on_action(cx.listener(Self::compare_marked_files))
                 .on_action(cx.listener(Self::open_context_menu))
+                .on_action(cx.listener(Self::scope_to_folder))
+                .on_action(cx.listener(Self::scope_to_parent))
+                .on_action(cx.listener(Self::reset_scope))
                 .when(!project.is_read_only(cx), |el| {
                     el.on_action(cx.listener(Self::new_file))
                         .on_action(cx.listener(Self::new_directory))
@@ -7783,6 +7830,7 @@ impl Render for ProjectPanel {
                 .track_focus(&self.focus_handle(cx))
                 .child(
                     v_flex()
+                        .children(self.render_scope_header(cx))
                         .child(
                             uniform_list("entries", item_count, {
                                 cx.processor(|this, range: Range<usize>, window, cx| {

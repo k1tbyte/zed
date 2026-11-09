@@ -11753,7 +11753,7 @@ fn mark_for(marks: &[(String, Option<DiagnosticMark>)], filename: &str) -> Optio
         .and_then(|(_, mark)| *mark)
 }
 
-fn visible_entries_as_strings(
+pub(crate) fn visible_entries_as_strings(
     panel: &Entity<ProjectPanel>,
     range: Range<usize>,
     cx: &mut VisualTestContext,
