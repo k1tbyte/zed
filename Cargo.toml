@@ -1069,14 +1069,15 @@ scratch = { path = "tooling/corgi/patches/scratch" }
 split-debuginfo = "unpacked"
 incremental = true
 codegen-units = 16
-debug = "limited"
+# Line tables keep backtraces readable; full debug info made target/ grow past 100 GB.
+debug = "line-tables-only"
 
 # mirror configuration for crates compiled for the build platform
 # (without this cargo will compile ~400 crates twice)
 [profile.dev.build-override]
 codegen-units = 16
 split-debuginfo = "unpacked"
-debug = "limited"
+debug = false
 
 # "debug" is a reserved profile name.
 [profile.dbg]
@@ -1087,6 +1088,8 @@ debug = "full"
 debug = "full"
 
 [profile.dev.package]
+# No debug info for third-party crates, only the workspace keeps line tables.
+"*" = { debug = false }
 # proc-macros start
 gpui_macros = { opt-level = 3 }
 derive_refineable = { opt-level = 3 }
