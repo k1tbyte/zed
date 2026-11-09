@@ -1,6 +1,7 @@
 mod capability_granter;
 pub mod extension_settings;
 pub mod headless_host;
+mod query_overrides;
 pub mod wasm_host;
 
 #[cfg(test)]
@@ -2435,9 +2436,8 @@ async fn load_plugin_queries(
         let fs = fs.clone();
         let path = root_path.join(query_file.file_name());
         async move {
-            fs.load(&path)
+            query_overrides::load(fs.as_ref(), &path)
                 .await
-                .ok()
                 .map(|contents| QueryFileContents::new(query_file, Cow::Owned(contents)))
         }
     }))
