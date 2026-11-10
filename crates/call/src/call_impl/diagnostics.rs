@@ -235,7 +235,8 @@ impl Serialize for ConnectionQualityDTO {
     }
 }
 
-#[cfg_attr(any(test, feature = "test-support"), allow(dead_code))]
+// Fork: only read by the WebRTC stats code, which is not built.
+#[allow(dead_code)]
 struct TrackContext {
     participant_id: String,
     participant_name: String,
@@ -250,7 +251,7 @@ struct PollResult {
 }
 
 #[derive(Clone, Copy)]
-#[cfg_attr(any(test, feature = "test-support"), allow(dead_code))]
+#[allow(dead_code)]
 struct InboundCounters {
     packets_received: u64,
     packets_lost: i64,
