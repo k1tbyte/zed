@@ -17,6 +17,7 @@ use crate::{
         render_llm_providers_page, render_mcp_servers_page, render_sandbox_settings_page,
         render_skills_setup_page, render_tool_permissions_setup_page,
     },
+    resharper,
 };
 
 const DEFAULT_STRING: String = String::new();
@@ -3700,7 +3701,8 @@ fn languages_and_tools_page(cx: &App) -> SettingsPage {
                         let items: Box<[SettingsPageItem]> = concat_sections!(
                             language_settings_data(),
                             non_editor_language_settings_data(),
-                            edit_prediction_language_settings_section()
+                            edit_prediction_language_settings_section(),
+                            resharper::csharp_section()
                         );
                         this.render_sub_page_items(
                             items.iter().enumerate(),

@@ -2,6 +2,7 @@ mod auto_fold_setting;
 mod components;
 mod page_data;
 pub mod pages;
+mod resharper;
 
 use agent_skills::SkillIndex;
 use anyhow::{Context as _, Result};
