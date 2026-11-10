@@ -2951,14 +2951,19 @@ impl LspCommand for GetHover {
     async fn response_from_lsp(
         self,
         message: Option<lsp::Hover>,
-        _: Entity<LspStore>,
+        lsp_store: Entity<LspStore>,
         buffer: Entity<Buffer>,
-        _: LanguageServerId,
+        server_id: LanguageServerId,
         cx: AsyncApp,
     ) -> Result<Self::Response> {
-        let Some(hover) = message else {
+        let Some(mut hover) = message else {
             return Ok(None);
         };
+        if let Some(adapter) = lsp_store.read_with(&cx, |lsp_store, _| {
+            lsp_store.language_server_adapter_for_id(server_id)
+        }) {
+            adapter.process_hover(&mut hover);
+        }
 
         let (language, range) = buffer.read_with(&cx, |buffer, _| {
             (

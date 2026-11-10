@@ -6,7 +6,8 @@ pub use lsp_types::*;
 use anyhow::{Context as _, Result, anyhow};
 use collections::{BTreeMap, HashMap};
 use futures::{
-    AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, Future, FutureExt, StreamExt,
+    AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, Future, FutureExt,
+    StreamExt,
     channel::oneshot::{self, Canceled},
     future::{self, Either},
     io::{BufReader, BufWriter},
@@ -31,7 +32,7 @@ use std::{
     io::Write,
     ops::DerefMut,
     path::PathBuf,
-    pin::Pin,
+    pin::{Pin, pin},
     sync::{
         Arc, Weak,
         atomic::{AtomicI32, Ordering::SeqCst},
@@ -56,6 +57,7 @@ pub const DEFAULT_LSP_REQUEST_TIMEOUT: Duration =
 
 /// The shutdown timeout for LSP servers (including Prettier/Copilot).
 const SERVER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+const SOCKET_CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub fn workspace_folder_for_uri(uri: Uri) -> WorkspaceFolder {
     let name = uri
@@ -510,6 +512,20 @@ pub const SEMANTIC_TOKEN_MODIFIERS: &[SemanticTokenModifier] = &[
     SemanticTokenModifier::new("constant"),
 ];
 
+fn log_unhandled_notification(
+    server_id: LanguageServerId,
+) -> impl Fn(&NotificationOrRequest) -> bool + Send + Sync + Clone + 'static {
+    move |notification| {
+        log::info!(
+            "Language server with id {} sent unhandled notification {}:\n{}",
+            server_id,
+            notification.method,
+            serde_json::to_string_pretty(&notification.params).unwrap(),
+        );
+        false
+    }
+}
+
 impl LanguageServer {
     /// Starts a language server process.
     /// A request_timeout of zero or Duration::MAX indicates an indefinite timeout.
@@ -523,30 +539,8 @@ impl LanguageServer {
         workspace_folders: Option<Arc<Mutex<BTreeSet<Uri>>>>,
         cx: &mut AsyncApp,
     ) -> Result<Self> {
-        let working_dir = if root_path.is_dir() {
-            root_path
-        } else {
-            root_path.parent().unwrap_or_else(|| Path::new("/"))
-        };
-        let root_uri = Uri::from_file_path(&working_dir)
-            .map_err(|()| anyhow!("{working_dir:?} is not a valid URI"))?;
-        log::info!(
-            "starting language server process. binary path: \
-            {:?}, working directory: {:?}, args: {:?}",
-            binary.path,
-            working_dir,
-            binary.arguments
-        );
-        let mut command = util::command::new_command(&binary.path);
-        command
-            .current_dir(working_dir)
-            .args(&binary.arguments)
-            .envs(binary.env.clone().unwrap_or_default())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-
+        let (mut command, root_uri) = Self::server_command(&binary, root_path)?;
+        command.stdin(Stdio::piped()).stdout(Stdio::piped());
         let mut server = command
             .spawn()
             .with_context(|| format!("failed to spawn command {command:?}",))?;
@@ -567,18 +561,99 @@ impl LanguageServer {
             root_uri,
             workspace_folders,
             cx,
-            move |notification| {
-                log::info!(
-                    "Language server with id {} sent unhandled notification {}:\n{}",
-                    server_id,
-                    notification.method,
-                    serde_json::to_string_pretty(&notification.params).unwrap(),
-                );
-                false
-            },
+            log_unhandled_notification(server_id),
         );
 
         Ok(server)
+    }
+
+    /// Starts a language server process that connects back to a local socket,
+    /// passed as `--socket=<port>` (vscode-languageclient `TransportKind.socket` convention).
+    pub async fn new_over_socket(
+        stderr_capture: Arc<Mutex<Option<String>>>,
+        server_id: LanguageServerId,
+        server_name: LanguageServerName,
+        binary: LanguageServerBinary,
+        root_path: &Path,
+        code_action_kinds: Option<Vec<CodeActionKind>>,
+        workspace_folders: Option<Arc<Mutex<BTreeSet<Uri>>>>,
+        cx: &mut AsyncApp,
+    ) -> Result<Self> {
+        let listener = smol::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+        let port = listener.local_addr()?.port();
+        let (mut command, root_uri) = Self::server_command(&binary, root_path)?;
+        command
+            .arg(format!("--socket={port}"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null());
+        let mut server = command
+            .spawn()
+            .with_context(|| format!("failed to spawn command {command:?}",))?;
+
+        let mut stderr = server.stderr.take();
+        let exited = server.status();
+        let timeout = cx.background_executor().timer(SOCKET_CONNECT_TIMEOUT);
+        let stream = match future::select(
+            pin!(listener.accept()),
+            future::select(pin!(exited), timeout),
+        )
+        .await
+        {
+            Either::Left((accepted, _)) => accepted?.0,
+            Either::Right((Either::Left((status, _)), _)) => {
+                let mut log = String::new();
+                if let Some(stderr) = stderr.as_mut() {
+                    stderr.read_to_string(&mut log).await.log_err();
+                }
+                anyhow::bail!("language server exited before connecting ({status:?}):\n{log}")
+            }
+            Either::Right((Either::Right(_), _)) => anyhow::bail!(
+                "language server did not connect to port {port} within {SOCKET_CONNECT_TIMEOUT:?}"
+            ),
+        };
+        Ok(Self::new_internal(
+            server_id,
+            server_name,
+            stream.clone(),
+            stream,
+            stderr,
+            stderr_capture,
+            Some(server),
+            code_action_kinds,
+            binary,
+            root_uri,
+            workspace_folders,
+            cx,
+            log_unhandled_notification(server_id),
+        ))
+    }
+
+    fn server_command(
+        binary: &LanguageServerBinary,
+        root_path: &Path,
+    ) -> Result<(util::command::Command, Uri)> {
+        let working_dir = if root_path.is_dir() {
+            root_path
+        } else {
+            root_path.parent().unwrap_or_else(|| Path::new("/"))
+        };
+        let root_uri = Uri::from_file_path(&working_dir)
+            .map_err(|()| anyhow!("{working_dir:?} is not a valid URI"))?;
+        log::info!(
+            "starting language server process. binary path: \
+            {:?}, working directory: {:?}, args: {:?}",
+            binary.path,
+            working_dir,
+            binary.arguments
+        );
+        let mut command = util::command::new_command(&binary.path);
+        command
+            .current_dir(working_dir)
+            .args(&binary.arguments)
+            .envs(binary.env.clone().unwrap_or_default())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        Ok((command, root_uri))
     }
 
     fn new_internal<Stdin, Stdout, Stderr, F>(
@@ -1493,6 +1568,10 @@ impl LanguageServer {
     /// Get the ID of the running language server.
     pub fn server_id(&self) -> LanguageServerId {
         self.server_id
+    }
+
+    pub fn root_uri(&self) -> &Uri {
+        &self.root_uri
     }
 
     /// Get the process ID of the running language server, if available.

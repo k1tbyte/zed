@@ -9493,6 +9493,7 @@ dependencies = [
  "globset",
  "gpui",
  "grammars",
+ "html_to_markdown",
  "http_client",
  "itertools 0.14.0",
  "json_schema_store",
@@ -9982,6 +9983,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "smol",
  "util",
  "zlog",
 ]

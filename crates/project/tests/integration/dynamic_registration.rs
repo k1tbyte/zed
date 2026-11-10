@@ -2745,6 +2745,33 @@ async fn test_multiple_did_change_watched_files_registrations(cx: &mut gpui::Tes
 }
 
 #[gpui::test]
+async fn test_dynamic_did_open_registration_reopens_resharper_buffers(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    let (initial, reopened) = register_did_open_after_opening_buffer(cx, "resharper").await;
+
+    let reopened = reopened.expect("expected didOpen to be re-sent after registration");
+    assert_eq!(reopened.text_document.uri, initial.text_document.uri);
+    assert_eq!(
+        reopened.text_document.version,
+        initial.text_document.version
+    );
+    assert_eq!(reopened.text_document.text, initial.text_document.text);
+}
+
+#[gpui::test]
+async fn test_dynamic_did_open_registration_keeps_other_servers(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+    let (_, reopened) = register_did_open_after_opening_buffer(cx, "the-language-server").await;
+
+    assert!(
+        reopened.is_none(),
+        "didOpen should only be re-sent to ReSharper"
+    );
+}
+
+#[gpui::test]
 async fn test_did_change_registration_respects_document_selector(cx: &mut gpui::TestAppContext) {
     init_test(cx);
     let (project, mut fake_server) = setup_dynamic_registration_test(
@@ -3497,6 +3524,70 @@ async fn setup_dynamic_registration_test(
     let fake_server = fake_servers.next().await.unwrap();
     cx.executor().run_until_parked();
     (project, fake_server)
+}
+
+/// Opens `a.rs` in a fake server without static text document sync, then has the server
+/// register `didOpen` and `didClose`. Returns the initial `didOpen` and any `didOpen` sent
+/// after the registration.
+async fn register_did_open_after_opening_buffer(
+    cx: &mut gpui::TestAppContext,
+    server_name: &'static str,
+) -> (
+    lsp::DidOpenTextDocumentParams,
+    Option<lsp::DidOpenTextDocumentParams>,
+) {
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/the-root"), json!({ "a.rs": "fn main() {}" }))
+        .await;
+
+    let project = Project::test(fs, [path!("/the-root").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(rust_lang());
+    let mut fake_servers = language_registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: server_name,
+            ..FakeLspAdapter::default()
+        },
+    );
+
+    let _buffer = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/the-root/a.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let mut fake_server = fake_servers.next().await.unwrap();
+    cx.executor().run_until_parked();
+
+    let initial = fake_server
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+
+    let document_selector = json!({ "documentSelector": [{ "language": "rust" }] });
+    register_capabilities(
+        &fake_server,
+        vec![
+            lsp::Registration {
+                id: "did-open".to_string(),
+                method: "textDocument/didOpen".to_string(),
+                register_options: Some(document_selector.clone()),
+            },
+            lsp::Registration {
+                id: "did-close".to_string(),
+                method: "textDocument/didClose".to_string(),
+                register_options: Some(document_selector),
+            },
+        ],
+    )
+    .await
+    .unwrap();
+    cx.executor().run_until_parked();
+
+    let reopened = fake_server
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .now_or_never();
+    (initial, reopened)
 }
 
 async fn register_capability(

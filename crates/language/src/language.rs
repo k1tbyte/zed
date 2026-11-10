@@ -410,6 +410,10 @@ impl CachedLspAdapter {
         self.adapter.code_action_kinds()
     }
 
+    pub fn uses_socket_transport(&self) -> bool {
+        self.adapter.uses_socket_transport()
+    }
+
     pub fn process_diagnostics(
         &self,
         params: &mut lsp::PublishDiagnosticsParams,
@@ -432,6 +436,10 @@ impl CachedLspAdapter {
 
     pub async fn process_completions(&self, completion_items: &mut [lsp::CompletionItem]) {
         self.adapter.process_completions(completion_items).await
+    }
+
+    pub fn process_hover(&self, hover: &mut lsp::Hover) {
+        self.adapter.process_hover(hover)
     }
 
     pub async fn labels_for_completions(
@@ -541,6 +549,8 @@ pub trait LspAdapter: 'static + Send + Sync + DynLspInstaller {
 
     /// Post-processes completions provided by the language server.
     async fn process_completions(&self, _: &mut [lsp::CompletionItem]) {}
+
+    fn process_hover(&self, _: &mut lsp::Hover) {}
 
     fn diagnostic_message_to_markdown(&self, _message: &str) -> Option<String> {
         None
@@ -655,6 +665,11 @@ pub trait LspAdapter: 'static + Send + Sync + DynLspInstaller {
     /// Returns a list of code actions supported by a given LspAdapter
     fn code_action_kinds(&self) -> Option<Vec<CodeActionKind>> {
         None
+    }
+
+    /// Whether the server connects back over a local socket instead of using stdio.
+    fn uses_socket_transport(&self) -> bool {
+        false
     }
 
     fn disk_based_diagnostic_sources(&self) -> Vec<String> {

@@ -16,7 +16,7 @@ use lsp::{
 
 use crate::lsp_store::{
     CompiledDocumentSelector, LanguageServerState, LspStore, RenamePathsWatchedForServer,
-    completion_trigger_characters_for_buffer, lsp_workspace_diagnostics_refresh,
+    completion_trigger_characters_for_buffer, lsp_workspace_diagnostics_refresh, resharper_ext,
 };
 
 #[derive(Debug)]
@@ -1039,6 +1039,9 @@ impl LspStore {
                         }
                     }
                 }
+                "textDocument/didOpen" => resharper_ext::reopen_buffers(self, &server, cx),
+                // Buffers are always closed in their servers.
+                "textDocument/didClose" => {}
                 _ => log::warn!("unhandled capability registration: {reg:?}"),
             }
             Ok(())

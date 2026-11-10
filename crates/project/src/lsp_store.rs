@@ -21,6 +21,7 @@ mod inlay_hints;
 pub mod json_language_server_ext;
 pub mod log_store;
 pub mod lsp_ext_command;
+pub mod resharper_ext;
 pub mod rust_analyzer_ext;
 mod semantic_tokens;
 pub mod vue_language_server_ext;
@@ -614,16 +615,30 @@ impl LocalLspStore {
                 }
 
                 let code_action_kinds = adapter.code_action_kinds();
-                lsp::LanguageServer::new(
-                    stderr_capture,
-                    server_id,
-                    server_name,
-                    binary,
-                    &worktree_abs_path,
-                    code_action_kinds,
-                    Some(pending_workspace_folders),
-                    cx,
-                )
+                if adapter.uses_socket_transport() {
+                    lsp::LanguageServer::new_over_socket(
+                        stderr_capture,
+                        server_id,
+                        server_name,
+                        binary,
+                        &worktree_abs_path,
+                        code_action_kinds,
+                        Some(pending_workspace_folders),
+                        cx,
+                    )
+                    .await
+                } else {
+                    lsp::LanguageServer::new(
+                        stderr_capture,
+                        server_id,
+                        server_name,
+                        binary,
+                        &worktree_abs_path,
+                        code_action_kinds,
+                        Some(pending_workspace_folders),
+                        cx,
+                    )
+                }
             }
         });
 
@@ -1416,6 +1431,7 @@ impl LocalLspStore {
         vue_language_server_ext::register_requests(lsp_store.clone(), language_server);
         json_language_server_ext::register_requests(lsp_store.clone(), language_server);
         rust_analyzer_ext::register_notifications(lsp_store.clone(), language_server);
+        resharper_ext::register_requests(lsp_store.clone(), language_server);
         clangd_ext::register_notifications(lsp_store, language_server, adapter);
     }
 

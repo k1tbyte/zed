@@ -1,6 +1,7 @@
 mod action;
 mod agent;
 mod editor;
+mod extended;
 mod extension;
 mod fallible_options;
 mod language;
@@ -17,6 +18,7 @@ pub use action::{ActionName, ActionWithArguments, CommandAliasTarget};
 pub use agent::*;
 use anyhow::Context;
 pub use editor::*;
+pub use extended::*;
 pub use extension::*;
 pub use fallible_options::*;
 pub use language::*;
@@ -335,6 +337,8 @@ pub struct SettingsContent {
     /// Settings for developer-oriented instrumentation tools (profilers,
     /// tracers, etc.) that can be toggled at runtime.
     pub instrumentation: Option<InstrumentationSettingsContent>,
+    /// Settings added by this fork of Zed.
+    pub extended: Option<ExtendedSettingsContent>,
 }
 
 /// Configuration for developer-oriented instrumentation tools that collect
@@ -412,7 +416,7 @@ fallible_options::flattened_deserialize!(SettingsContent {
         journal, log, line_indicator_format, language_models, copilot, outline_panel, project_panel,
         node, proxy, reduce_motion, server_url, credentials_url, session, telemetry, terminal,
         title_bar, vim_mode, calls, which_key, vim, modeline_lines, feature_flags,
-        instrumentation,
+        instrumentation, extended,
     },
     defaults: {},
 });
