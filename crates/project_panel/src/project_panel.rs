@@ -170,6 +170,7 @@ pub struct ProjectPanel {
     undo_manager: UndoManager,
     state: State,
     scope: Option<(WorktreeId, ProjectEntryId)>,
+    saved_scope: Option<PathBuf>,
 }
 
 struct UpdateVisibleEntriesTask {
@@ -937,6 +938,7 @@ impl ProjectPanel {
                     &cx,
                 ),
                 scope: None,
+                saved_scope: None,
             };
             this.update_visible_entries(None, false, false, window, cx);
 
@@ -1036,8 +1038,15 @@ impl ProjectPanel {
         workspace: WeakEntity<Workspace>,
         mut cx: AsyncWindowContext,
     ) -> Result<Entity<Self>> {
+        let saved_scope = scope::load_saved_scope(&workspace, &mut cx).await;
         workspace.update_in(&mut cx, |workspace, window, cx| {
-            ProjectPanel::new(workspace, window, cx)
+            let panel = ProjectPanel::new(workspace, window, cx);
+            if let Some(saved_scope) = saved_scope {
+                panel.update(cx, |panel, cx| {
+                    panel.apply_saved_scope(saved_scope, window, cx)
+                });
+            }
+            panel
         })
     }
 
@@ -4688,6 +4697,7 @@ impl ProjectPanel {
         let hide_gitignore = settings.hide_gitignore;
         let sort_mode = settings.sort_mode;
         let sort_order = settings.sort_order;
+        self.restore_scope(cx);
         let scope = self.scope_entry(cx);
         let project = self.project.read(cx);
         let repo_snapshots = project.git_store().read(cx).display_repo_snapshots(cx);

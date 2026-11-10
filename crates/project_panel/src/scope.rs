@@ -1,12 +1,36 @@
 // Fork: Visual Studio-like "Scope to This", the panel shows a single folder as its root.
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
-use gpui::{App, Context, Window, actions};
+use db::kvp::KeyValueStore;
+use gpui::{App, AsyncWindowContext, Context, WeakEntity, Window, actions};
 use project::{Entry, ProjectEntryId, WorktreeId};
 use ui::{ListItem, Tooltip, prelude::*};
-use util::rel_path::RelPath;
+use util::{ResultExt as _, rel_path::RelPath};
+use workspace::Workspace;
 
 use crate::ProjectPanel;
+
+const SCOPE_KEY: &str = "ProjectPanelScope";
+
+fn scope_key(workspace: &Workspace) -> Option<String> {
+    let id = workspace.database_id()?;
+    Some(format!("{SCOPE_KEY}-{}", i64::from(id)))
+}
+
+pub(crate) async fn load_saved_scope(
+    workspace: &WeakEntity<Workspace>,
+    cx: &mut AsyncWindowContext,
+) -> Option<PathBuf> {
+    let key = workspace
+        .read_with(cx, |workspace, _| scope_key(workspace))
+        .ok()??;
+    let store = cx.update(|_, cx| KeyValueStore::global(cx)).ok()?;
+    cx.background_spawn(async move { store.read_kvp(&key) })
+        .await
+        .log_err()
+        .flatten()
+        .map(PathBuf::from)
+}
 
 actions!(
     project_panel,
@@ -113,8 +137,79 @@ impl ProjectPanel {
             self.expand_entry(worktree_id, entry_id, cx);
         }
         self.scope = scope;
+        self.saved_scope = None;
+        self.save_scope(cx);
         self.update_visible_entries(selection, false, true, window, cx);
         cx.notify();
+    }
+
+    fn save_scope(&self, cx: &mut Context<Self>) {
+        let Some(key) = self
+            .workspace
+            .read_with(cx, |workspace, _| scope_key(workspace))
+            .ok()
+            .flatten()
+        else {
+            return;
+        };
+        let path = self.scope.and_then(|(worktree_id, entry_id)| {
+            let worktree = self
+                .project
+                .read(cx)
+                .worktree_for_id(worktree_id, cx)?
+                .read(cx);
+            Some(worktree.absolutize(&worktree.entry_for_id(entry_id)?.path))
+        });
+        let store = KeyValueStore::global(cx);
+        cx.background_spawn(async move {
+            match path {
+                Some(path) => {
+                    store
+                        .write_kvp(key, path.to_string_lossy().into_owned())
+                        .await
+                }
+                None => store.delete_kvp(key).await,
+            }
+        })
+        .detach_and_log_err(cx);
+    }
+
+    pub(crate) fn apply_saved_scope(
+        &mut self,
+        saved: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.saved_scope = Some(saved);
+        self.update_visible_entries(None, false, false, window, cx);
+    }
+
+    /// Applies the saved scope once the worktree scan has reached its folder.
+    pub(crate) fn restore_scope(&mut self, cx: &App) {
+        let Some(saved) = self.saved_scope.as_deref() else {
+            return;
+        };
+        let project = self.project.read(cx);
+        let Some((worktree, path)) = project.find_worktree(saved, cx) else {
+            return;
+        };
+        let worktree = worktree.read(cx);
+        let (Some(root), Some(entry)) = (worktree.root_entry(), worktree.entry_for_path(&path))
+        else {
+            return;
+        };
+        if entry.is_dir() {
+            let expanded = self
+                .state
+                .expanded_dir_ids
+                .entry(worktree.id())
+                .or_insert_with(|| vec![root.id]);
+            if let Err(ix) = expanded.binary_search(&entry.id) {
+                expanded.insert(ix, entry.id);
+            }
+            self.scope = Some((worktree.id(), entry.id));
+        }
+        self.saved_scope = None;
     }
 
     pub(crate) fn render_scope_header(&self, cx: &Context<Self>) -> Option<impl IntoElement> {

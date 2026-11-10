@@ -257,3 +257,39 @@ async fn test_reveal_outside_scope(cx: &mut TestAppContext) {
         "Explicit reveal resets the scope"
     );
 }
+
+#[gpui::test]
+async fn test_saved_scope_is_restored_once_its_folder_is_scanned(cx: &mut TestAppContext) {
+    let (panel, mut cx) = panel_with_monorepo(cx).await;
+    let cx = &mut cx;
+    let whole_project = visible_entries_as_strings(&panel, 0..10, cx);
+
+    panel.update_in(cx, |panel, window, cx| {
+        panel.apply_saved_scope("/root/apps/late".into(), window, cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(visible_entries_as_strings(&panel, 0..10, cx), whole_project);
+
+    let fs = panel.read_with(cx, |panel, cx| panel.project.read(cx).fs().as_fake());
+    fs.insert_tree("/root/apps/late", json!({ "a.rs": "" }))
+        .await;
+    cx.run_until_parked();
+    assert_eq!(
+        visible_entries_as_strings(&panel, 0..10, cx),
+        &["v apps/late", "      a.rs"]
+    );
+
+    panel.update_in(cx, |panel, window, cx| {
+        panel.apply_saved_scope("/root/apps/later".into(), window, cx);
+        panel.reset_scope(&ResetScope, window, cx);
+    });
+    fs.insert_tree("/root/apps/later", json!({ "b.rs": "" }))
+        .await;
+    cx.run_until_parked();
+    panel.read_with(cx, |panel, _| {
+        assert!(
+            panel.scope.is_none(),
+            "A user reset drops the pending scope"
+        )
+    });
+}
