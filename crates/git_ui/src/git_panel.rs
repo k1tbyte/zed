@@ -4418,6 +4418,7 @@ impl GitPanel {
         rules_content: Option<&str>,
         instructions: Option<&str>,
         recent_commit_messages: &[String],
+        branch: Option<&str>,
         subject: &str,
         diff_text: &str,
     ) -> String {
@@ -4459,6 +4460,11 @@ impl GitPanel {
             )
         };
 
+        let branch_section = match branch {
+            Some(branch) => format!("\nThe commit is made on the branch: {branch}\n"),
+            None => String::new(),
+        };
+
         let subject_section = if subject.trim().is_empty() {
             String::new()
         } else {
@@ -4466,7 +4472,7 @@ impl GitPanel {
         };
 
         format!(
-            "{prompt}{user_agents_md_section}{rules_section}{instructions_section}{recent_commit_messages_section}{subject_section}\nHere are the changes in this commit:\n{diff_text}"
+            "{prompt}{user_agents_md_section}{rules_section}{instructions_section}{recent_commit_messages_section}{branch_section}{subject_section}\nHere are the changes in this commit:\n{diff_text}"
         )
     }
 
@@ -4530,6 +4536,11 @@ impl GitPanel {
             .clone();
         let project = self.project.clone();
         let repo_work_dir = repo.read(cx).work_directory_abs_path.clone();
+        let branch = repo
+            .read(cx)
+            .branch
+            .as_ref()
+            .map(|branch| branch.name().to_owned());
 
         self.generate_commit_message_task = Some(cx.spawn(async move |this, mut cx| {
             async move {
@@ -4615,6 +4626,7 @@ impl GitPanel {
                     rules_content.as_deref(),
                     instructions.as_deref(),
                     &recent_commit_messages,
+                    branch.as_deref(),
                     &subject,
                     &diff_text,
                 );
@@ -14144,10 +14156,12 @@ mod tests {
                 "feat: improve commit generation\n\nRelease Notes:\n\n- Improved commit suggestions"
                     .to_string(),
             ],
+            Some("feature/IQ-123-commit-branch"),
             "Update generated message",
             "diff --git a/file b/file",
         );
 
+        assert!(prompt.contains("The commit is made on the branch: feature/IQ-123-commit-branch"));
         assert!(prompt.contains("Use terse commit messages."));
         assert!(prompt.contains("Use the git_ui prefix."));
         assert!(prompt.contains("Follow the configured commit message format."));
@@ -14177,11 +14191,13 @@ mod tests {
             None,
             Some("   \n  "),
             &[],
+            None,
             "",
             "diff --git a/file b/file",
         );
 
         assert!(!prompt.contains("<commit_message_instructions>"));
+        assert!(!prompt.contains("branch"));
     }
 
     #[gpui::test]
