@@ -18,7 +18,9 @@ actions!(
     git_graph,
     [
         /// Toggles focus on the git graph panel.
-        ToggleFocus
+        ToggleFocus,
+        /// Toggles the git graph panel, closing it when it loses focus.
+        Toggle
     ]
 );
 
@@ -55,6 +57,11 @@ fn save_position(position: DockPosition, cx: &App) {
 pub fn register(workspace: &mut Workspace) {
     workspace.register_action(|workspace, _: &ToggleFocus, window, cx| {
         workspace.toggle_panel_focus::<GitGraphPanel>(window, cx);
+    });
+    workspace.register_action(|workspace, _: &Toggle, window, cx| {
+        if !workspace.toggle_panel_focus::<GitGraphPanel>(window, cx) {
+            workspace.close_panel::<GitGraphPanel>(window, cx);
+        }
     });
 }
 
