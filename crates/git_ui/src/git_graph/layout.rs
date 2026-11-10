@@ -3,7 +3,6 @@
 
 use super::GitGraph;
 use crate::git_graph_view_options::{ColumnLayout, ViewOptions};
-use git::repository::LogSource;
 use gpui::{App, Context, DefiniteLength, Task, px};
 use std::time::Duration;
 use ui::table_row::TableRow;
@@ -32,7 +31,7 @@ impl LayoutSync {
 
 impl GitGraph {
     fn is_path_history(&self) -> bool {
-        matches!(self.log_source, LogSource::Path(_))
+        self.log_source.is_path_history()
     }
 
     fn current_layout(&self, cx: &App) -> Option<Layout> {

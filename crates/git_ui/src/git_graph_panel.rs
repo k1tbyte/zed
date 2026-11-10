@@ -128,8 +128,7 @@ impl GitGraphPanel {
         {
             let current = graph.read(cx).log_source().clone();
             // Column layout differs for file history, so only plain logs can switch in place.
-            let switches_in_place =
-                !matches!(current, LogSource::Path(_)) && !matches!(log_source, LogSource::Path(_));
+            let switches_in_place = !current.is_path_history() && !log_source.is_path_history();
             if current == log_source {
                 return graph.clone();
             }
@@ -185,10 +184,8 @@ impl GitGraphPanel {
         let zoomed = self.zoomed;
         let history_path = self.graph.as_ref().and_then(|graph| {
             let graph = graph.read(cx);
-            match graph.log_source() {
-                LogSource::Path(path) => Some((graph.repo_id(), path.as_unix_str().to_string())),
-                _ => None,
-            }
+            let path = graph.log_source().path()?;
+            Some((graph.repo_id(), path.as_unix_str().to_string()))
         });
 
         h_flex()

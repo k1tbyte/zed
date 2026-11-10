@@ -49,6 +49,7 @@ mod git_graph_branches;
 mod git_graph_history;
 pub mod git_graph_panel;
 mod git_graph_push;
+mod git_graph_selection_history;
 mod git_graph_view_options;
 pub mod git_panel;
 mod git_panel_settings;

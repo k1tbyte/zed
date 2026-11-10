@@ -9,6 +9,10 @@ use crate::{
     git_graph_branches::{BranchesSidebar, BranchesSidebarEvent},
     git_graph_history::{HistoryTarget, Pick, RowSelection, selection_menu},
     git_graph_panel::GitGraphPanel,
+    git_graph_selection_history::{
+        PendingSelectionHistoryTarget, SelectionHistoryError, SelectionHistoryProjection,
+        project_selection_history_to_head, show_selection_history_error,
+    },
     git_graph_view_options::ViewOptions,
     git_status_icon,
 };
@@ -1124,6 +1128,98 @@ pub fn init(cx: &mut App) {
                     })
                 },
             )
+            .when_some(
+                resolve_selection_history_target(workspace, window, cx),
+                |div, target| {
+                    let git_store = workspace.project().read(cx).git_store().clone();
+                    let project = workspace.project().clone();
+                    let workspace = workspace.weak_handle();
+
+                    div.on_action(move |_: &git::FileHistoryForSelection, window, cx| {
+                        let PendingSelectionHistoryTarget::Ready {
+                            repo_id,
+                            repo_path,
+                            buffer,
+                            source_range,
+                        } = target.clone()
+                        else {
+                            workspace
+                                .update(cx, |workspace, cx| {
+                                    show_selection_history_error(
+                                        workspace,
+                                        SelectionHistoryError::UnsupportedDeletedSelection,
+                                        cx,
+                                    );
+                                })
+                                .ok();
+                            return;
+                        };
+
+                        let load_diff = project.update(cx, |project, cx| {
+                            project.open_uncommitted_diff(buffer.clone(), cx)
+                        });
+                        let workspace = workspace.clone();
+                        let git_store = git_store.clone();
+                        window
+                            .spawn(cx, async move |cx| -> anyhow::Result<()> {
+                                let diff = match load_diff.await {
+                                    Ok(diff) => diff,
+                                    Err(error) => {
+                                        workspace.update(cx, |workspace, cx| {
+                                            show_selection_history_error(
+                                                workspace,
+                                                SelectionHistoryError::DiffLoad(error.to_string()),
+                                                cx,
+                                            );
+                                        })?;
+                                        return Ok(());
+                                    }
+                                };
+
+                                let buffer_snapshot =
+                                    buffer.read_with(cx, |buffer, _| buffer.snapshot());
+                                let diff_snapshot =
+                                    diff.read_with(cx, |diff, cx| diff.snapshot(cx));
+                                let projection = project_selection_history_to_head(
+                                    source_range,
+                                    &buffer_snapshot,
+                                    &diff_snapshot,
+                                );
+
+                                workspace.update_in(
+                                    cx,
+                                    |workspace, window, cx| match projection {
+                                        SelectionHistoryProjection::Mapped {
+                                            start_line,
+                                            end_line,
+                                        } => open_or_reuse_graph(
+                                            workspace,
+                                            repo_id,
+                                            git_store,
+                                            LogSource::Selection {
+                                                path: repo_path,
+                                                start_line,
+                                                end_line,
+                                            },
+                                            None,
+                                            window,
+                                            cx,
+                                        ),
+                                        SelectionHistoryProjection::NoCommittedLines => {
+                                            show_selection_history_error(
+                                                workspace,
+                                                SelectionHistoryError::NoCommittedLines,
+                                                cx,
+                                            );
+                                        }
+                                    },
+                                )?;
+                                Ok(())
+                            })
+                            .detach();
+                    })
+                },
+            )
             .when(
                 workspace.project().read(cx).active_repository(cx).is_some(),
                 |div| {
@@ -1233,6 +1329,45 @@ fn resolve_file_history_target(
         .read(cx)
         .repository_and_path_for_project_path(&project_path, cx)?;
     Some((repo.read(cx).id, LogSource::Path(repo_path)))
+}
+
+/// Resolves a `git::FileHistoryForSelection` target from the active editor's
+/// current selection. If no non-empty selection exists, falls back to the
+/// current line as a single-line range (matches PyCharm behavior).
+fn resolve_selection_history_target(
+    workspace: &Workspace,
+    _window: &Window,
+    cx: &App,
+) -> Option<PendingSelectionHistoryTarget> {
+    let editor = workspace.active_item_as::<Editor>(cx)?;
+    let editor_ref = editor.read(cx);
+
+    let selection = editor_ref.selections.newest_anchor();
+    if selection.start.diff_base_anchor().is_some() || selection.end.diff_base_anchor().is_some() {
+        return Some(PendingSelectionHistoryTarget::UnsupportedDeletedSelection);
+    }
+
+    let multibuffer = editor_ref.buffer().read(cx);
+    let snapshot = multibuffer.snapshot(cx);
+    let (buffer, source_range) =
+        snapshot.anchor_range_to_buffer_anchor_range(selection.start..selection.end)?;
+    let source_buffer = multibuffer.buffer(buffer.remote_id())?;
+    let file = buffer.file()?;
+    let project_path = ProjectPath {
+        worktree_id: file.worktree_id(cx),
+        path: file.path().clone(),
+    };
+
+    let git_store = workspace.project().read(cx).git_store();
+    let (repo, repo_path) = git_store
+        .read(cx)
+        .repository_and_path_for_project_path(&project_path, cx)?;
+    Some(PendingSelectionHistoryTarget::Ready {
+        repo_id: repo.read(cx).id,
+        repo_path,
+        buffer: source_buffer,
+        source_range,
+    })
 }
 
 pub fn open_or_reuse_graph(
@@ -1621,7 +1756,7 @@ impl GitGraph {
             }
         };
 
-        let is_path_history = matches!(self.log_source, LogSource::Path(_));
+        let is_path_history = self.log_source.is_path_history();
         let graph_fraction = if is_path_history { 0.0 } else { value(0) };
         let offset = if is_path_history { 0 } else { 1 };
 
@@ -1693,7 +1828,7 @@ impl GitGraph {
             state
         });
 
-        let column_widths = if matches!(log_source, LogSource::Path(_)) {
+        let column_widths = if log_source.is_path_history() {
             cx.new(|_cx| {
                 RedistributableColumnsState::new(
                     4,
@@ -1723,7 +1858,7 @@ impl GitGraph {
         };
         let column_visibility = TableRow::from_element(
             false,
-            if matches!(log_source, LogSource::Path(_)) {
+            if log_source.is_path_history() {
                 TABLE_COLUMN_COUNT
             } else {
                 TABLE_COLUMN_COUNT + 1
@@ -3059,7 +3194,7 @@ impl GitGraph {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let is_path_history = matches!(self.log_source, LogSource::Path(_));
+        let is_path_history = self.log_source.is_path_history();
         let columns: &[&str] = if is_path_history {
             &["Description", "Date", "Author", "Commit"]
         } else {
@@ -3140,7 +3275,7 @@ impl GitGraph {
             .gap_1p5()
             .border_b_1()
             .border_color(color.border_variant)
-            .when(!matches!(self.log_source, LogSource::Path(_)), |this| {
+            .when(!self.log_source.is_path_history(), |this| {
                 this.child(
                     Button::new("git-graph-toggle-branches", "Branches")
                         .start_icon(Icon::new(IconName::GitBranch).size(IconSize::Small))
@@ -4609,7 +4744,7 @@ impl Render for GitGraph {
                     this.child(self.render_loading_spinner(cx))
                 })
         } else {
-            let is_path_history = matches!(self.log_source, LogSource::Path(_));
+            let is_path_history = self.log_source.is_path_history();
             let header_resize_info =
                 HeaderResizeInfo::from_redistributable(&self.column_widths, cx);
 
@@ -4990,8 +5125,7 @@ impl Render for GitGraph {
                 h_flex()
                     .size_full()
                     .when(
-                        !matches!(self.log_source, LogSource::Path(_))
-                            && self.view_options.branches_visible,
+                        !self.log_source.is_path_history() && self.view_options.branches_visible,
                         |this| this.child(self.branches_sidebar.clone()),
                     )
                     .child(
@@ -5041,10 +5175,10 @@ impl Item for GitGraph {
                 .file_name()
                 .map(|name| name.to_string_lossy().to_string())
         });
-        let path_history_path = match &self.log_source {
-            LogSource::Path(path) => Some(path.as_unix_str().to_string()),
-            _ => None,
-        };
+        let path_history_path = self
+            .log_source
+            .path()
+            .map(|path| path.as_unix_str().to_string());
 
         Some(TabTooltipContent::Custom(Box::new(Tooltip::element({
             move |_, _| {
@@ -5066,7 +5200,7 @@ impl Item for GitGraph {
     }
 
     fn tab_content_text(&self, _detail: usize, cx: &App) -> SharedString {
-        if let LogSource::Path(path) = &self.log_source {
+        if let Some(path) = self.log_source.path() {
             return path
                 .as_ref()
                 .file_name()
@@ -5358,6 +5492,10 @@ mod persistence {
             LogSource::Branch(_) => LOG_SOURCE_BRANCH,
             LogSource::Sha(_) => LOG_SOURCE_SHA,
             LogSource::Path(_) => LOG_SOURCE_PATH,
+            // Selection is a transient view opened from an editor selection
+            // and does not roundtrip through the DB: persist it as Path history
+            // so the reopened graph still shows file history.
+            LogSource::Selection { .. } => LOG_SOURCE_PATH,
         }
     }
 
@@ -5367,6 +5505,7 @@ mod persistence {
             LogSource::Branch(branch) => Some(branch.to_string()),
             LogSource::Sha(oid) => Some(oid.to_string()),
             LogSource::Path(path) => Some(path.as_unix_str().to_string()),
+            LogSource::Selection { path, .. } => Some(path.as_unix_str().to_string()),
         }
     }
 
@@ -5638,6 +5777,7 @@ fn generate_parents_from_oids(
 mod tests {
     use super::*;
     use anyhow::{Context, Result, bail};
+    use buffer_diff::BufferDiff;
     use collections::{HashMap, HashSet};
     use fs::FakeFs;
     use git::Oid;
@@ -5653,6 +5793,7 @@ mod tests {
     use smallvec::{SmallVec, smallvec};
     use std::path::Path;
     use std::sync::{Arc, Mutex};
+    use workspace::notifications::NotificationId;
 
     fn init_test(cx: &mut TestAppContext) {
         cx.update(|cx| {
@@ -5662,6 +5803,241 @@ mod tests {
             language_model::init(cx);
             crate::init(cx);
         });
+    }
+
+    fn selection_history_projection(
+        cx: &mut TestAppContext,
+        head_text: &str,
+        current_text: &str,
+        range: Range<language::Point>,
+    ) -> SelectionHistoryProjection {
+        let buffer = cx.new(|cx| language::Buffer::local(current_text, cx));
+        let diff = cx.new(|cx| {
+            BufferDiff::new_with_base_text(head_text, &buffer.read(cx).text_snapshot(), cx)
+        });
+        cx.run_until_parked();
+
+        let buffer_snapshot = buffer.read_with(cx, |buffer, _| buffer.snapshot());
+        let diff_snapshot = diff.read_with(cx, |diff, cx| diff.snapshot(cx));
+        let anchor_range =
+            buffer_snapshot.anchor_before(range.start)..buffer_snapshot.anchor_before(range.end);
+        project_selection_history_to_head(anchor_range, &buffer_snapshot, &diff_snapshot)
+    }
+
+    #[gpui::test]
+    fn test_selection_history_projection(cx: &mut TestAppContext) {
+        use SelectionHistoryProjection::{Mapped, NoCommittedLines};
+
+        let cases = [
+            (
+                "unchanged middle line",
+                "a\nb\nc\n",
+                "a\nb\nc\n",
+                language::Point::new(1, 0)..language::Point::new(2, 0),
+                Mapped {
+                    start_line: 2,
+                    end_line: 2,
+                },
+            ),
+            (
+                "leading insertion",
+                "a\nb\nc\n",
+                "new\na\nb\nc\n",
+                language::Point::new(0, 0)..language::Point::new(2, 0),
+                Mapped {
+                    start_line: 1,
+                    end_line: 1,
+                },
+            ),
+            (
+                "selection shifted by leading insertion",
+                "fn main() {\n    let x = 1;\n    let y = 2;\n    let z = x + y;\n}\n",
+                "// uncommitted\nfn main() {\n    let x = 1;\n    let y = 2;\n    let z = x + y;\n}\n",
+                language::Point::new(3, 0)..language::Point::new(5, 0),
+                Mapped {
+                    start_line: 3,
+                    end_line: 4,
+                },
+            ),
+            (
+                "trailing insertion",
+                "a\nb\n",
+                "a\nnew\nb\n",
+                language::Point::new(0, 0)..language::Point::new(2, 0),
+                Mapped {
+                    start_line: 1,
+                    end_line: 1,
+                },
+            ),
+            (
+                "interior insertion",
+                "a\nb\n",
+                "a\nnew\nb\n",
+                language::Point::new(0, 0)..language::Point::new(3, 0),
+                Mapped {
+                    start_line: 1,
+                    end_line: 2,
+                },
+            ),
+            (
+                "all-added line",
+                "a\nb\n",
+                "a\nnew\nb\n",
+                language::Point::new(1, 0)..language::Point::new(2, 0),
+                NoCommittedLines,
+            ),
+            (
+                "unequal replacement",
+                "a\nb\nc\nd\n",
+                "a\nB\nC\nX\nd\n",
+                language::Point::new(2, 0)..language::Point::new(3, 0),
+                Mapped {
+                    start_line: 2,
+                    end_line: 3,
+                },
+            ),
+            (
+                "half-open endpoint",
+                "a\nb\n",
+                "a\nb\n",
+                language::Point::new(0, 0)..language::Point::new(1, 0),
+                Mapped {
+                    start_line: 1,
+                    end_line: 1,
+                },
+            ),
+            (
+                "committed blank line",
+                "a\n\nb\n",
+                "a\n\nb\n",
+                language::Point::new(1, 0)..language::Point::new(2, 0),
+                Mapped {
+                    start_line: 2,
+                    end_line: 2,
+                },
+            ),
+            (
+                "all-added blank line",
+                "a\nb\n",
+                "a\n\nb\n",
+                language::Point::new(1, 0)..language::Point::new(2, 0),
+                NoCommittedLines,
+            ),
+            (
+                "live line adjacent to deletion",
+                "a\ngone\nb\n",
+                "a\nb\n",
+                language::Point::new(1, 0)..language::Point::new(2, 0),
+                Mapped {
+                    start_line: 3,
+                    end_line: 3,
+                },
+            ),
+            (
+                "empty committed file",
+                "",
+                "",
+                language::Point::zero()..language::Point::zero(),
+                NoCommittedLines,
+            ),
+            (
+                "caret on virtual eof row",
+                "a\n",
+                "a\n",
+                language::Point::new(1, 0)..language::Point::new(1, 0),
+                NoCommittedLines,
+            ),
+            (
+                "half-open range ending at virtual eof",
+                "a\n",
+                "a\n",
+                language::Point::zero()..language::Point::new(1, 0),
+                Mapped {
+                    start_line: 1,
+                    end_line: 1,
+                },
+            ),
+            (
+                "caret at eof without trailing newline",
+                "a",
+                "a",
+                language::Point::new(0, 1)..language::Point::new(0, 1),
+                Mapped {
+                    start_line: 1,
+                    end_line: 1,
+                },
+            ),
+        ];
+
+        for (name, head_text, current_text, range, expected) in cases {
+            assert_eq!(
+                selection_history_projection(cx, head_text, current_text, range),
+                expected,
+                "{name}"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn test_selection_history_crosses_expanded_deleted_hunk(cx: &mut TestAppContext) {
+        let buffer = cx.new(|cx| language::Buffer::local("a\nb\n", cx));
+        let diff = cx.new(|cx| {
+            BufferDiff::new_with_base_text("a\ngone\nb\n", &buffer.read(cx).text_snapshot(), cx)
+        });
+        cx.run_until_parked();
+
+        let multibuffer = cx.new(|cx| {
+            let mut multibuffer = editor::MultiBuffer::new(language::Capability::ReadWrite);
+            multibuffer.set_excerpts_for_buffer(
+                buffer.clone(),
+                [language::Point::zero()..language::Point::new(2, 0)],
+                0,
+                cx,
+            );
+            multibuffer.add_diff(diff, cx);
+            multibuffer.set_all_diff_hunks_expanded(cx);
+            multibuffer
+        });
+        cx.run_until_parked();
+
+        let snapshot = multibuffer.read_with(cx, |multibuffer, cx| multibuffer.snapshot(cx));
+        let deleted_anchor = snapshot.anchor_before(language::Point::new(1, 1));
+        assert!(deleted_anchor.diff_base_anchor().is_some());
+
+        let live_start = snapshot.anchor_before(language::Point::zero());
+        let live_end = snapshot.anchor_before(snapshot.max_point());
+        assert!(
+            snapshot
+                .anchor_range_to_buffer_anchor_range(live_start..live_end)
+                .is_some(),
+            "live endpoints surrounding a deleted hunk should resolve"
+        );
+    }
+
+    #[test]
+    fn test_selection_history_error_messages() {
+        let no_history = SelectionHistoryError::NoCommittedLines;
+        assert_eq!(
+            no_history.notification_id(),
+            NotificationId::named("selection-history-no-committed-lines".into())
+        );
+        assert_eq!(
+            no_history.message(),
+            "Selected lines have no commit history"
+        );
+
+        let deleted = SelectionHistoryError::UnsupportedDeletedSelection;
+        assert_eq!(
+            deleted.notification_id(),
+            NotificationId::named("selection-history-deleted-lines".into())
+        );
+
+        let load = SelectionHistoryError::DiffLoad("backend failed".to_string());
+        assert_eq!(
+            load.notification_id(),
+            NotificationId::named("selection-history-diff-load-failed".into())
+        );
+        assert!(load.message().contains("backend failed"));
     }
 
     fn build_oid_to_row_map(graph: &GraphData) -> HashMap<Oid, usize> {
@@ -6833,6 +7209,184 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_file_history_for_selection_opens_graph(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            Path::new(util::path!("/project")),
+            json!({
+                ".git": {},
+                "main.rs": "// uncommitted\nfn main() {\n    let x = 1;\n    let y = 2;\n    let z = x + y;\n}\n",
+            }),
+        )
+        .await;
+        fs.set_head_for_repo(
+            Path::new(util::path!("/project/.git")),
+            &[(
+                "main.rs",
+                "fn main() {\n    let x = 1;\n    let y = 2;\n    let z = x + y;\n}\n".to_string(),
+            )],
+            "head",
+        );
+        let commits = vec![Arc::new(InitialGraphCommitData {
+            sha: Oid::from_bytes(&[1; 20]).unwrap(),
+            parents: smallvec![],
+            ref_names: vec!["HEAD".into(), "refs/heads/main".into()],
+        })];
+        fs.set_graph_commits(Path::new(util::path!("/project/.git")), commits);
+
+        let project = Project::test(fs.clone(), [Path::new(util::path!("/project"))], cx).await;
+        cx.run_until_parked();
+
+        let repository = project.read_with(cx, |project, cx| {
+            project
+                .active_repository(cx)
+                .expect("should have active repository")
+        });
+        let file_repo_path = RepoPath::new(&"main.rs").unwrap();
+        let file_project_path = repository
+            .read_with(cx, |repository, cx| {
+                repository.repo_path_to_project_path(&file_repo_path, cx)
+            })
+            .expect("file should resolve to project path");
+
+        let workspace_window = cx.add_window(|window, cx| {
+            workspace::MultiWorkspace::test_new(project.clone(), window, cx)
+        });
+        let workspace = workspace_window
+            .read_with(cx, |multi, _| multi.workspace().clone())
+            .expect("workspace should exist");
+
+        cx.background_executor.allow_parking();
+
+        // Open the file in an editor and select current rows 3-4. The
+        // uncommitted first line means they map to HEAD lines 3-4.
+        let buffer = project
+            .update(cx, |project, cx| {
+                project.open_buffer(file_project_path.clone(), cx)
+            })
+            .await
+            .expect("buffer should open");
+        let diff = project
+            .update(cx, |project, cx| {
+                project.open_uncommitted_diff(buffer.clone(), cx)
+            })
+            .await
+            .expect("uncommitted diff should open");
+        let buffer_snapshot = buffer.read_with(cx, |buffer, _| buffer.snapshot());
+        let diff_snapshot = diff.read_with(cx, |diff, cx| diff.snapshot(cx));
+        assert_eq!(
+            project_selection_history_to_head(
+                buffer_snapshot.anchor_before(language::Point::new(3, 0))
+                    ..buffer_snapshot.anchor_before(language::Point::new(5, 0)),
+                &buffer_snapshot,
+                &diff_snapshot,
+            ),
+            SelectionHistoryProjection::Mapped {
+                start_line: 3,
+                end_line: 4,
+            }
+        );
+        workspace_window
+            .update(cx, |multi, window, cx| {
+                let workspace = multi.workspace();
+                let multibuffer = cx.new(|cx| {
+                    let mut mb = editor::MultiBuffer::new(language::Capability::ReadWrite);
+                    mb.set_excerpts_for_buffer(
+                        buffer.clone(),
+                        [language::Point::new(3, 0)..language::Point::new(6, 0)],
+                        0,
+                        cx,
+                    );
+                    mb
+                });
+                let editor = cx.new(|cx| {
+                    Editor::for_multibuffer(multibuffer, Some(project.clone()), window, cx)
+                });
+                workspace.update(cx, |workspace, cx| {
+                    workspace.add_item_to_active_pane(
+                        Box::new(editor.clone()),
+                        None,
+                        true,
+                        window,
+                        cx,
+                    );
+                });
+                editor.update(cx, |editor, cx| {
+                    let snapshot = editor.buffer().read(cx).snapshot(cx);
+                    // The endpoint at excerpt row 2 is excluded.
+                    let start = snapshot.anchor_before(language::Point::new(0, 0));
+                    let end = snapshot.anchor_before(language::Point::new(2, 0));
+                    editor.change_selections(
+                        editor::SelectionEffects::no_scroll(),
+                        window,
+                        cx,
+                        |selections| {
+                            selections.select_anchor_ranges([start..end]);
+                        },
+                    );
+                    window.focus(&editor.focus_handle(cx), cx);
+                });
+            })
+            .expect("workspace window should be available");
+        cx.run_until_parked();
+
+        // Dispatch the new action.
+        workspace_window
+            .update(cx, |_, window, cx| {
+                window.dispatch_action(Box::new(git::FileHistoryForSelection), cx);
+            })
+            .expect("workspace window should be available");
+        cx.run_until_parked();
+
+        // The opened GitGraph should be filtered with LogSource::Selection on
+        // src/main.rs, lines 3..=4 (1-based inclusive).
+        workspace.read_with(cx, |workspace, cx| {
+            let graphs = workspace.items_of_type::<GitGraph>(cx).collect::<Vec<_>>();
+            assert_eq!(graphs.len(), 1, "expected exactly one GitGraph to open");
+            let graph = graphs[0].read(cx);
+            assert_eq!(graph.column_visibility.as_slice().len(), TABLE_COLUMN_COUNT);
+            assert!(graph.log_source.is_path_history());
+            assert_eq!(graph.tab_content_text(0, cx), "main.rs");
+            let log_source = graph.log_source.clone();
+            match log_source {
+                LogSource::Selection {
+                    path,
+                    start_line,
+                    end_line,
+                } => {
+                    assert_eq!(path, file_repo_path);
+                    assert_eq!(start_line, 3);
+                    assert_eq!(end_line, 4);
+                }
+                other => panic!("expected LogSource::Selection, got {other:?}"),
+            }
+        });
+
+        let selection_source = LogSource::Selection {
+            path: file_repo_path,
+            start_line: 3,
+            end_line: 4,
+        };
+        repository.update(cx, |repository, _| {
+            repository.prune_selection_graph_data_for_test(0, None);
+            assert!(
+                repository
+                    .get_graph_data(selection_source.clone(), LogOrder::DateOrder)
+                    .is_none()
+            );
+        });
+        workspace.read_with(cx, |workspace, cx| {
+            let graph = workspace
+                .items_of_type::<GitGraph>(cx)
+                .next()
+                .expect("git graph should remain open");
+            assert_eq!(graph.read(cx).graph_data.commits.len(), 1);
+        });
+    }
+
+    #[gpui::test]
     fn test_serialized_state_roundtrip(_cx: &mut TestAppContext) {
         use persistence::SerializedGitGraphState;
 
@@ -6939,6 +7493,24 @@ mod tests {
             persistence::deserialize_hidden_columns(bits, 6),
             vec![true, false, true, false, true, false]
         );
+    }
+
+    #[gpui::test]
+    fn test_selection_log_source_restores_as_path_history(_cx: &mut TestAppContext) {
+        let source = LogSource::Selection {
+            path: RepoPath::new(&"file.txt").unwrap(),
+            start_line: 2,
+            end_line: 3,
+        };
+        let state = persistence::SerializedGitGraphState {
+            log_source_type: Some(persistence::serialize_log_source_type(&source)),
+            log_source_value: persistence::serialize_log_source_value(&source),
+            ..Default::default()
+        };
+        assert!(matches!(
+            persistence::deserialize_log_source(&state),
+            LogSource::Path(_)
+        ));
     }
 
     #[gpui::test]
