@@ -1,7 +1,7 @@
 use anyhow::{Context as _, Result, bail};
 use async_trait::async_trait;
 use collections::HashMap;
-use gpui::{App, AsyncApp};
+use gpui::AsyncApp;
 use html_to_markdown::{
     HandleTag, HtmlElement, MarkdownWriter, StartTagOutcome, TagHandler, convert_html_to_markdown,
     markdown,
@@ -12,10 +12,8 @@ use language::{
     LspAdapterDelegate, LspInstaller,
 };
 use lsp::{LanguageServerBinary, LanguageServerId, LanguageServerName};
-use project::lsp_store::resharper_ext::RESHARPER_SERVER_NAME;
-use settings::{
-    AllLanguageSettingsContent, ConfiguredLanguageServer, RegisterSetting, Settings, SettingsStore,
-};
+use project::lsp_store::{language_server_settings, resharper_ext::RESHARPER_SERVER_NAME};
+use serde::Deserialize;
 use smol::{fs, stream::StreamExt as _};
 use std::{
     cell::RefCell,
@@ -29,51 +27,17 @@ use util::{ResultExt as _, fs::remove_matching};
 
 const UNRESOLVED_SYMBOL_PREFIX: &str = "Cannot resolve symbol";
 
-#[derive(Clone, Debug, RegisterSetting)]
-struct ResharperSettings {
-    enabled: bool,
+/// Read from `lsp.resharper.settings`.
+#[derive(Default, Deserialize)]
+struct DownloadSettings {
+    /// `{platform}` expands to e.g. `macos-arm64`.
     download_url: Option<String>,
     sha256: Option<String>,
 }
 
-impl Settings for ResharperSettings {
-    fn from_settings(content: &settings::SettingsContent) -> Self {
-        let resharper = content.extended.clone().unwrap().resharper.unwrap();
-        Self {
-            enabled: resharper.enabled.unwrap(),
-            download_url: resharper.download_url,
-            sha256: resharper.sha256,
-        }
-    }
-}
-
-/// Registers the opt-in adapter and re-applies the C# server choice when `enabled` flips.
-pub fn init(languages: &Arc<LanguageRegistry>, cx: &mut App) {
+/// Opt-in: C# uses it once `languages.CSharp.language_servers` lists `resharper`.
+pub fn register(languages: &LanguageRegistry) {
     languages.register_available_lsp_adapter(RESHARPER_SERVER_NAME, Arc::new(ResharperLspAdapter));
-    let languages = languages.clone();
-    let mut enabled = false;
-    let mut sync = move |cx: &mut App| {
-        let now = ResharperSettings::get_global(cx).enabled;
-        if std::mem::replace(&mut enabled, now) != now {
-            crate::set_extension_settings(languages.language_settings(), cx);
-        }
-    };
-    sync(cx);
-    cx.observe_global::<SettingsStore>(sync).detach();
-}
-
-/// Goes into the layer below user settings, so an explicit `language_servers` still wins.
-pub fn choose_csharp_server(all_languages: &mut AllLanguageSettingsContent, cx: &App) {
-    if ResharperSettings::get_global(cx).enabled {
-        all_languages
-            .languages
-            .0
-            .entry("CSharp".into())
-            .or_default()
-            .language_servers = Some(vec![ConfiguredLanguageServer::new(
-            RESHARPER_SERVER_NAME.0,
-        )]);
-    }
 }
 
 pub struct ResharperLspAdapter;
@@ -156,14 +120,24 @@ impl LspInstaller for ResharperLspAdapter {
 
     async fn fetch_latest_server_version(
         &self,
-        _: &Arc<dyn LspAdapterDelegate>,
+        delegate: &Arc<dyn LspAdapterDelegate>,
         _: bool,
         cx: &mut AsyncApp,
     ) -> Result<BackendArchive> {
-        let settings = cx.update(|cx| ResharperSettings::get_global(cx).clone());
-        let url = settings
-            .download_url
-            .context("set `extended.resharper.download_url` to download the ReSharper backend")?
+        let settings = cx.update(|cx| {
+            language_server_settings(delegate.as_ref(), &RESHARPER_SERVER_NAME, cx)
+                .and_then(|settings| settings.settings.clone())
+        });
+        let DownloadSettings {
+            download_url,
+            sha256,
+        } = settings
+            .map(serde_json::from_value)
+            .transpose()
+            .context("invalid `lsp.resharper.settings`")?
+            .unwrap_or_default();
+        let url = download_url
+            .context("set `lsp.resharper.settings.download_url` to download the ReSharper backend")?
             .replace("{platform}", platform()?);
         let directory = Path::new(&url)
             .file_stem()
@@ -172,7 +146,7 @@ impl LspInstaller for ResharperLspAdapter {
             .into_owned();
         Ok(BackendArchive {
             url,
-            sha256: settings.sha256,
+            sha256,
             directory,
         })
     }
@@ -300,16 +274,11 @@ impl LspAdapter for ResharperLspAdapter {
 #[cfg(test)]
 mod tests {
     use super::{ResharperLspAdapter, html_to_markdown};
-    use gpui::{BorrowAppContext as _, TestAppContext};
-    use language::{
-        Language, LanguageConfig, LanguageName, LanguageRegistry, LspAdapter as _,
-        language_settings::LanguageSettings,
-    };
+    use language::{Language, LanguageConfig, LspAdapter as _};
     use lsp::{
         CompletionItem, CompletionItemKind, Diagnostic, DiagnosticSeverity, LanguageServerId,
         Position, PublishDiagnosticsParams, Range, Uri,
     };
-    use settings::{ConfiguredLanguageServer, SettingsStore};
     use std::sync::Arc;
 
     fn diagnostic(line: u32, severity: DiagnosticSeverity, message: &str) -> Diagnostic {
@@ -394,63 +363,5 @@ mod tests {
              ##### Params\n\n- value: The value to write.\n\n\
              ##### Exceptions\n\n- IOException: An I/O error occurred."
         );
-    }
-
-    #[gpui::test]
-    fn test_enabled_makes_resharper_the_only_csharp_server(cx: &mut TestAppContext) {
-        let csharp = LanguageName::new_static("CSharp");
-        let servers = |cx: &mut TestAppContext| {
-            cx.update(|cx| {
-                LanguageSettings::resolve(None, Some(&csharp), cx)
-                    .language_servers
-                    .clone()
-            })
-        };
-        let update = |cx: &mut TestAppContext, f: fn(&mut settings::SettingsContent)| {
-            cx.update(|cx| {
-                cx.update_global::<SettingsStore, _>(|store, cx| store.update_user_settings(cx, f))
-            });
-            cx.run_until_parked();
-        };
-        cx.update(|cx| {
-            let store = SettingsStore::test(cx);
-            cx.set_global(store);
-            let languages = Arc::new(LanguageRegistry::test(cx.background_executor().clone()));
-            super::init(&languages, cx);
-        });
-        let default_servers = servers(cx);
-
-        update(cx, |settings| {
-            settings
-                .extended
-                .get_or_insert_default()
-                .resharper
-                .get_or_insert_default()
-                .enabled = Some(true)
-        });
-        assert_eq!(servers(cx), [ConfiguredLanguageServer::new("resharper")]);
-
-        update(cx, |settings| {
-            settings
-                .project
-                .all_languages
-                .languages
-                .0
-                .entry("CSharp".into())
-                .or_default()
-                .language_servers = Some(vec![ConfiguredLanguageServer::new("roslyn")])
-        });
-        assert_eq!(servers(cx), [ConfiguredLanguageServer::new("roslyn")]);
-
-        update(cx, |settings| {
-            settings.project.all_languages.languages.0.clear();
-            settings
-                .extended
-                .get_or_insert_default()
-                .resharper
-                .get_or_insert_default()
-                .enabled = Some(false)
-        });
-        assert_eq!(servers(cx), default_servers);
     }
 }

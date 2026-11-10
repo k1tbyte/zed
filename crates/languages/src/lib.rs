@@ -264,7 +264,7 @@ pub fn init(languages: Arc<LanguageRegistry>, fs: Arc<dyn Fs>, node: NodeRuntime
         LanguageServerName("tailwindcss-intellisense-css".into()),
         tailwindcss_adapter,
     );
-    resharper::init(&languages, cx);
+    resharper::register(&languages);
     languages.register_available_lsp_adapter(
         LanguageServerName("eslint".into()),
         eslint_adapter.clone(),
@@ -310,7 +310,18 @@ pub fn init(languages: Arc<LanguageRegistry>, fs: Arc<dyn Fs>, node: NodeRuntime
         while subscription.next().await.is_some() {
             let language_settings = languages.language_settings();
             if language_settings != prev_language_settings {
-                cx.update(|cx| set_extension_settings(language_settings.clone(), cx));
+                cx.update(|cx| {
+                    SettingsStore::update_global(cx, |settings, cx| {
+                        settings
+                            .set_extension_settings(
+                                settings::ExtensionsSettingsContent {
+                                    all_languages: language_settings.clone(),
+                                },
+                                cx,
+                            )
+                            .log_err();
+                    });
+                });
                 prev_language_settings = language_settings;
             }
         }
@@ -324,15 +335,6 @@ pub fn init(languages: Arc<LanguageRegistry>, fs: Arc<dyn Fs>, node: NodeRuntime
     for provider in manifest_providers {
         project::ManifestProvidersStore::global(cx).register(provider);
     }
-}
-
-fn set_extension_settings(mut all_languages: settings::AllLanguageSettingsContent, cx: &mut App) {
-    resharper::choose_csharp_server(&mut all_languages, cx);
-    SettingsStore::update_global(cx, |settings, cx| {
-        settings
-            .set_extension_settings(settings::ExtensionsSettingsContent { all_languages }, cx)
-            .log_err();
-    });
 }
 
 #[derive(Default)]

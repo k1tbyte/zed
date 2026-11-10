@@ -43,7 +43,6 @@ mod lsp_ext;
 mod mouse_context_menu;
 pub mod movement;
 mod persistence;
-mod resharper_ext;
 mod runnables;
 mod rust_analyzer_ext;
 pub mod scroll;
@@ -381,7 +380,6 @@ pub fn init(cx: &mut App) {
             workspace.register_action(Editor::cancel_language_server_work);
             workspace.register_action(Editor::toggle_focus);
             workspace.register_action(Editor::view_bookmarks);
-            resharper_ext::register_actions(workspace);
             if let Some(window) = window {
                 cx.subscribe_in(
                     workspace.project(),
@@ -5046,7 +5044,7 @@ impl Editor {
         )
     }
 
-    pub(crate) fn insert_snippet_with_autoindent(
+    pub fn insert_snippet_with_autoindent(
         &mut self,
         insertion_ranges: &[Range<MultiBufferOffset>],
         snippet: Snippet,

@@ -12,6 +12,7 @@ mod lsp_command;
 mod lsp_store;
 mod manifest_tree;
 mod project_search;
+mod resharper;
 mod search;
 mod search_history;
 mod signature_help;

@@ -1721,18 +1721,6 @@
   //
   // Default: true
   "word_diff_enabled": true,
-  // Settings added by this fork of Zed.
-  "extended": {
-    "resharper": {
-      // Whether ReSharper is the only C# language server, unless
-      // `languages.CSharp.language_servers` says otherwise.
-      "enabled": false,
-      // URL of the backend zip archive, `{platform}` expands to e.g. `macos-arm64`.
-      // "download_url": "https://.../Backend.<version>.{platform}.zip",
-      // SHA-256 of the archive, checked when set.
-      // "sha256": null
-    },
-  },
   // Control what info is collected by Zed.
   "telemetry": {
     // Send debug info like crash reports.
