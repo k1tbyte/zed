@@ -2024,7 +2024,11 @@ impl GitGraph {
                 // NOTE: this fixes an loading performance regression
                 if repository.read(cx).scan_id > 1 {
                     self.pending_select_sha = None;
-                    self.invalidate_state(cx);
+                    if self.selected_branch_is_gone(repository.read(cx)) {
+                        self.set_log_source(LogSource::All, cx);
+                    } else {
+                        self.invalidate_state(cx);
+                    }
                 }
             }
             RepositoryEvent::StashEntriesChanged if self.log_source == LogSource::All => {
@@ -2037,6 +2041,16 @@ impl GitGraph {
             RepositoryEvent::GraphEvent(_, _) => {}
             _ => {}
         }
+    }
+
+    // A deleted or renamed branch would make every `git log` for it fail.
+    fn selected_branch_is_gone(&self, repository: &Repository) -> bool {
+        matches!(
+            &self.log_source,
+            LogSource::Branch(ref_name)
+                if ref_name.as_str() != "HEAD"
+                    && !repository.branch_list.iter().any(|branch| &branch.ref_name == ref_name)
+        )
     }
 
     fn fetch_initial_graph_data(&mut self, cx: &mut App) {
@@ -6685,6 +6699,61 @@ mod tests {
 
         assert_eq!(commit_count, 0);
         assert!(!is_loading, "empty graph data should stop loading");
+    }
+
+    #[gpui::test]
+    async fn test_graph_leaves_a_deleted_branch(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            Path::new("/project"),
+            json!({ ".git": {}, "file.txt": "content" }),
+        )
+        .await;
+        fs.insert_branches(Path::new("/project/.git"), &["main", "feature"]);
+
+        let project = Project::test(fs.clone(), [Path::new("/project")], cx).await;
+        project
+            .update(cx, |project, cx| project.git_scans_complete(cx))
+            .await;
+        cx.run_until_parked();
+        let repository = project.read_with(cx, |project, cx| {
+            project
+                .active_repository(cx)
+                .expect("should have an active repository")
+        });
+
+        let (multi_workspace, cx) = cx.add_window_view(|window, cx| {
+            workspace::MultiWorkspace::test_new(project.clone(), window, cx)
+        });
+        let workspace = multi_workspace.read_with(&*cx, |multi, _| multi.workspace().downgrade());
+        let feature = LogSource::Branch("refs/heads/feature".into());
+        let git_graph = cx.new_window_entity(|window, cx| {
+            GitGraph::new(
+                repository.read(cx).id,
+                project.read(cx).git_store().clone(),
+                workspace,
+                Some(feature.clone()),
+                window,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            git_graph.read_with(&*cx, |graph, _| graph.log_source().clone()),
+            feature
+        );
+
+        fs.with_git_state(Path::new("/project/.git"), true, |state| {
+            state.branches.remove("feature");
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(
+            git_graph.read_with(&*cx, |graph, _| graph.log_source().clone()),
+            LogSource::All
+        );
     }
 
     #[gpui::test]

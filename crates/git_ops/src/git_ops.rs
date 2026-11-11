@@ -84,6 +84,15 @@ pub async fn update_branch(
     Ok(())
 }
 
+// Refreshes only this branch's remote-tracking ref, not everything the remote has.
+pub async fn fetch_branch(repo: &LocalRepo, remote: &str, branch: &str) -> Result<()> {
+    // Full refs keep a same-named tag from winning. The leading `+` matches a regular fetch,
+    // which also accepts a rewritten remote branch.
+    let refspec = format!("+refs/heads/{branch}:refs/remotes/{remote}/{branch}");
+    git(repo, &["fetch", remote, &refspec], &[]).await?;
+    Ok(())
+}
+
 // Autostash so a dirty tree does not block the rebase; git restores the changes afterwards.
 pub async fn rebase_onto(repo: &LocalRepo, onto: &str) -> Result<()> {
     git(repo, &["rebase", "--autostash", onto], &[]).await?;

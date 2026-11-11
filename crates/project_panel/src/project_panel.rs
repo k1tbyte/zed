@@ -1202,6 +1202,12 @@ impl ProjectPanel {
                 (has_git_repo, has_history)
             };
 
+            // Only the exact line this menu writes counts, so removing it affects nothing else.
+            let is_excluded = worktree.as_local().is_some_and(|local| {
+                local
+                    .repo_exclude_pattern_for(&local.absolutize(&entry.path), is_dir)
+                    .is_some()
+            });
             let has_pasteable_content = self.has_pasteable_content(cx);
             let context_menu = ContextMenu::build(window, cx, |menu, _, _| {
                 menu.context(self.focus_handle.clone()).map(|menu| {
@@ -1283,10 +1289,19 @@ impl ProjectPanel {
                                         )
                                     })
                                     .action("Add to .gitignore", Box::new(git::AddToGitignore))
-                                    .action(
-                                        "Add to .git/info/exclude",
-                                        Box::new(git::AddToGitInfoExclude),
-                                    )
+                                    .map(|menu| {
+                                        if is_excluded {
+                                            menu.action(
+                                                "Remove from .git/info/exclude",
+                                                Box::new(git::RemoveFromGitInfoExclude),
+                                            )
+                                        } else {
+                                            menu.action(
+                                                "Add to .git/info/exclude",
+                                                Box::new(git::AddToGitInfoExclude),
+                                            )
+                                        }
+                                    })
                                     .when(self.may_be_tracked(entry_id, is_dir), |menu| {
                                         menu.action("Stop Tracking", Box::new(git::StopTracking))
                                     })
@@ -2824,6 +2839,32 @@ impl ProjectPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.edit_git_info_exclude("add to", cx, |repository, repo_path, is_dir| {
+            repository.add_path_to_git_info_exclude(repo_path, is_dir)
+        });
+    }
+
+    fn remove_from_git_info_exclude(
+        &mut self,
+        _: &git::RemoveFromGitInfoExclude,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.edit_git_info_exclude("remove from", cx, |repository, repo_path, is_dir| {
+            repository.remove_path_from_git_info_exclude(repo_path, is_dir)
+        });
+    }
+
+    fn edit_git_info_exclude(
+        &mut self,
+        failure_prefix: &'static str,
+        cx: &mut Context<Self>,
+        edit: impl FnOnce(
+            &mut project::git_store::Repository,
+            &git::repository::RepoPath,
+            bool,
+        ) -> futures::channel::oneshot::Receiver<anyhow::Result<()>>,
+    ) {
         maybe!({
             let selection = self.selection?;
             let (_, entry) = self.selected_sub_entry(cx)?;
@@ -2838,15 +2879,15 @@ impl ProjectPanel {
                 .repository_and_path_for_project_path(&project_path, cx)?;
 
             let workspace = self.workspace.clone();
-            let receiver = repository.update(cx, |repo, _| {
-                repo.add_path_to_git_info_exclude(&repo_path, is_dir)
-            });
+            let receiver =
+                repository.update(cx, |repository, _| edit(repository, &repo_path, is_dir));
 
             cx.spawn(async move |_, cx| {
                 if let Err(e) = receiver.await? {
                     if let Some(workspace) = workspace.upgrade() {
                         cx.update(|cx| {
-                            let message = format!("Failed to add to .git/info/exclude: {}", e);
+                            let message =
+                                format!("Failed to {failure_prefix} .git/info/exclude: {}", e);
                             let toast = StatusToast::new(message, cx, |this, _| {
                                 this.icon(Icon::new(IconName::XCircle).color(Color::Error))
                                     .dismiss_button(true)
@@ -7818,6 +7859,7 @@ impl Render for ProjectPanel {
                         .on_action(cx.listener(Self::restore_file))
                         .on_action(cx.listener(Self::add_to_gitignore))
                         .on_action(cx.listener(Self::add_to_git_info_exclude))
+                        .on_action(cx.listener(Self::remove_from_git_info_exclude))
                         .on_action(cx.listener(Self::stop_tracking))
                         .when(!is_collab, |el| el.on_action(cx.listener(Self::trash)))
                         .when(!is_collab, |el| {
@@ -8519,7 +8561,7 @@ fn git_status_indicator(git_status: GitSummary) -> Option<(&'static str, Color)>
         return Some(("!", Color::Conflict));
     }
     if git_status.untracked > 0 {
-        return Some(("U", Color::Untracked));
+        return Some(("U", Color::Created));
     }
     if git_status.worktree.deleted > 0 {
         return Some(("D", Color::Deleted));

@@ -2599,6 +2599,46 @@ mod repository_activation_tests {
         );
     }
 
+    #[gpui::test]
+    async fn test_remove_path_from_git_info_exclude(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (fs, project) = build_project(
+            cx,
+            json!({
+                ".git": { "info": { "exclude": "a.txt\n/b.txt\nsub/\n*.log\n" } },
+                "a.txt": "",
+                "b.txt": "",
+                "c.log": "",
+                "sub": { "d.txt": "" },
+            }),
+        )
+        .await;
+        let repository = project.read_with(cx, |project, cx| {
+            project
+                .active_repository(cx)
+                .expect("should have an active repository")
+        });
+
+        for (path, is_dir) in [("a.txt", false), ("b.txt", false), ("sub", true)] {
+            repository
+                .update(cx, |repository, _| {
+                    repository.remove_path_from_git_info_exclude(
+                        &git::repository::RepoPath::new(path).unwrap(),
+                        is_dir,
+                    )
+                })
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        assert_eq!(
+            fs.load(Path::new(path!("/root/.git/info/exclude")))
+                .await
+                .unwrap(),
+            "*.log\n"
+        );
+    }
+
     fn set_file_scan_depth(cx: &mut TestAppContext, depth: u32) {
         cx.update(|cx| {
             cx.update_global::<SettingsStore, _>(|store, cx| {

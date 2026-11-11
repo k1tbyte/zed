@@ -4505,6 +4505,59 @@ async fn test_repo_exclude_in_worktree(executor: BackgroundExecutor, cx: &mut Te
 }
 
 #[gpui::test]
+async fn test_repo_exclude_pattern_for_an_exact_path(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(executor);
+    fs.insert_tree(
+        path!("/repo"),
+        json!({
+            ".git": { "info": { "exclude": "a.txt\nsub/\n*.log\nname.md\n" } },
+            "a.txt": "",
+            "b.log": "",
+            "sub": { "name.md": "" },
+            "name.md": "",
+            "other.txt": "",
+        }),
+    )
+    .await;
+
+    let worktree = Worktree::local(
+        path!("/repo").as_ref(),
+        true,
+        fs.clone(),
+        Default::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+    worktree
+        .update(cx, |worktree, _| {
+            worktree.as_local().unwrap().scan_complete()
+        })
+        .await;
+    cx.run_until_parked();
+
+    worktree.update(cx, |worktree, _| {
+        let local = worktree.as_local().unwrap();
+        let pattern = |path: &str, is_dir: bool| {
+            local.repo_exclude_pattern_for(&local.absolutize(rel_path(path)), is_dir)
+        };
+        assert_eq!(pattern("a.txt", false).as_deref(), Some("a.txt"));
+        assert_eq!(pattern("sub", true).as_deref(), Some("sub/"));
+        // A glob or a pattern for another depth would also hit other files.
+        assert_eq!(pattern("b.log", false), None);
+        assert_eq!(pattern("sub/name.md", false), None);
+        assert_eq!(pattern("other.txt", false), None);
+    });
+}
+
+#[gpui::test]
 async fn test_repo_exclude_naming_a_worktree_ancestor(
     executor: BackgroundExecutor,
     cx: &mut TestAppContext,

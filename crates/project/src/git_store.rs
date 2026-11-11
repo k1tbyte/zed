@@ -8454,6 +8454,41 @@ impl Repository {
         )
     }
 
+    /// Local repositories only: the panel offers this for paths its worktree found in the file.
+    pub fn remove_path_from_git_info_exclude(
+        &mut self,
+        repo_path: &RepoPath,
+        is_dir: bool,
+    ) -> oneshot::Receiver<Result<()>> {
+        let repository_dir = self.snapshot.common_dir_abs_path.clone();
+        let path = repo_path.as_ref().display(PathStyle::Unix).to_string();
+        let patterns = [path.clone(), format!("{path}/")]
+            .into_iter()
+            .flat_map(|pattern| [format!("/{pattern}"), pattern])
+            .filter(|pattern| pattern.ends_with('/') == is_dir)
+            .collect::<Vec<_>>();
+
+        self.send_job(
+            "remove_path_from_git_info_exclude",
+            None,
+            move |git_repo, _cx| async move {
+                match git_repo {
+                    RepositoryState::Local(LocalRepositoryState { fs, .. }) => {
+                        remove_patterns_from_ignore_file(
+                            fs,
+                            repository_dir.join(git::REPO_EXCLUDE),
+                            patterns,
+                        )
+                        .await
+                    }
+                    RepositoryState::Remote(_) => {
+                        bail!("removing from .git/info/exclude is not supported remotely")
+                    }
+                }
+            },
+        )
+    }
+
     pub fn stash_drop(
         &mut self,
         index: Option<usize>,
@@ -9768,6 +9803,29 @@ impl Repository {
                 }
             },
         )
+    }
+
+    /// Re-reads the branch list now, for callers that just changed refs and must not wait
+    /// for the file watcher to notice.
+    pub fn refresh_branches(&mut self, cx: &mut Context<Self>) -> oneshot::Receiver<Result<()>> {
+        let this = cx.weak_entity();
+        let updates_tx = self
+            .git_store()
+            .and_then(|git_store| match &git_store.read(cx).state {
+                GitStoreState::Local { downstream, .. } => downstream
+                    .as_ref()
+                    .map(|downstream| downstream.updates_tx.clone()),
+                _ => None,
+            });
+        self.send_job("refresh_branches", None, move |repo, mut cx| async move {
+            match repo {
+                RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                    Self::refresh_branch_list(&this, backend, updates_tx, &mut cx).await
+                }
+                // The host sends the updated list on its own.
+                RepositoryState::Remote(_) => Ok(()),
+            }
+        })
     }
 
     pub fn delete_branch(
@@ -11260,6 +11318,31 @@ async fn append_pattern_to_ignore_file(
     fs.save(
         &file_path,
         &text::Rope::from(new_content.as_str()),
+        text::LineEnding::Unix,
+    )
+    .await
+}
+
+async fn remove_patterns_from_ignore_file(
+    fs: Arc<dyn Fs>,
+    file_path: PathBuf,
+    patterns: Vec<String>,
+) -> Result<()> {
+    let content = fs
+        .load(&file_path)
+        .await
+        .with_context(|| format!("loading {}", file_path.display()))?;
+    let mut remaining = content
+        .lines()
+        .filter(|line| !patterns.iter().any(|pattern| line.trim() == pattern))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !remaining.is_empty() {
+        remaining.push('\n');
+    }
+    fs.save(
+        &file_path,
+        &text::Rope::from(remaining.as_str()),
         text::LineEnding::Unix,
     )
     .await

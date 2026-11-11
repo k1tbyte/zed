@@ -3086,6 +3086,22 @@ impl LocalSnapshot {
         inodes
     }
 
+    /// The `.git/info/exclude` line that excludes exactly this path, if there is one. Broader
+    /// patterns do not count: removing one would also un-exclude other files.
+    pub fn repo_exclude_pattern_for(&self, abs_path: &Path, is_dir: bool) -> Option<String> {
+        self.repo_exclude_by_work_dir_abs_path
+            .iter()
+            .find_map(|(work_dir, (exclude, _))| {
+                let relative = abs_path.strip_prefix(work_dir).ok()?;
+                let ::ignore::Match::Ignore(glob) = exclude.matched(abs_path, is_dir) else {
+                    return None;
+                };
+                let pattern = glob.original();
+                let relative = relative.to_string_lossy().replace('\\', "/");
+                (pattern.trim_matches('/') == relative).then(|| pattern.to_string())
+            })
+    }
+
     async fn ignore_stack_for_abs_path(
         &self,
         abs_path: &Path,

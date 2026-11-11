@@ -7,7 +7,7 @@ use futures::channel::oneshot;
 use git::repository::Branch;
 use git_ui_core::local_git::{local_repo, queue_git_job};
 use git_ui_core::notifications::show_error_toast;
-use gpui::{App, AsyncWindowContext, Context, Entity, PromptLevel, WeakEntity, Window};
+use gpui::{App, AppContext, AsyncWindowContext, Context, Entity, PromptLevel, WeakEntity, Window};
 use project::git_store::Repository;
 use std::future::Future;
 use ui::prelude::*;
@@ -148,6 +148,7 @@ impl BranchesSidebar {
                     }
                 }
             }
+            refresh_branches(&repository, cx).await;
             if let Some((command, error)) = failures.into_iter().next()
                 && let Some(workspace) = workspace.upgrade()
             {
@@ -186,6 +187,31 @@ impl BranchesSidebar {
             async move {
                 git_ops::update_branch(&repo, &name, &remote, &remote_branch, is_checked_out).await
             },
+            window,
+            cx,
+        );
+    }
+
+    pub(super) fn fetch(&mut self, branch: &Branch, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(repository) = self.repository(cx) else {
+            return;
+        };
+        let Some((remote, remote_branch)) = fetch_target(branch) else {
+            return;
+        };
+        let Some(repo) = local_repo(&repository, cx) else {
+            return;
+        };
+        let name = branch.name().to_string();
+        self.run_git_operation(
+            &repository,
+            GitOperation {
+                job: "fetch branch",
+                progress: format!("Fetching {name}…"),
+                success: format!("Fetched {name}"),
+                command: format!("fetch {name}"),
+            },
+            async move { git_ops::fetch_branch(&repo, &remote, &remote_branch).await },
             window,
             cx,
         );
@@ -360,6 +386,18 @@ impl BranchesSidebar {
     }
 }
 
+/// The remote and the branch on it that `branch` mirrors: its upstream, or itself when remote.
+pub(super) fn fetch_target(branch: &Branch) -> Option<(String, String)> {
+    let (remote, remote_branch) = if branch.is_remote() {
+        branch.name().split_once('/')?
+    } else {
+        let upstream = branch.upstream.as_ref()?;
+        (upstream.remote_name()?, upstream.branch_name()?)
+    };
+    // `origin/HEAD` is a symbolic ref, not a branch that can be fetched.
+    (remote_branch != "HEAD").then(|| (remote.to_string(), remote_branch.to_string()))
+}
+
 /// Asks for a name, then creates the branch at `base`. `label` is what the title shows.
 pub(crate) fn new_branch_from_ref(
     workspace: &WeakEntity<Workspace>,
@@ -388,6 +426,16 @@ pub(crate) fn new_branch_from_ref(
     );
 }
 
+// The branch list otherwise waits for the file watcher, which can lag or miss a change.
+async fn refresh_branches(repository: &Entity<Repository>, cx: &mut impl AppContext) {
+    repository
+        .update(cx, |repository, cx| repository.refresh_branches(cx))
+        .await
+        .map_err(|_| anyhow!("Operation was canceled"))
+        .and_then(|result| result)
+        .log_err();
+}
+
 async fn delete_one(
     repository: &Entity<Repository>,
     is_remote: bool,
@@ -411,13 +459,17 @@ fn run_branch_operation(
     operation: impl FnOnce(&mut Repository) -> oneshot::Receiver<anyhow::Result<()>> + 'static,
 ) {
     cx.spawn(async move |cx| {
-        match repository
+        let result = match repository
             .update(cx, |repository, _| operation(repository))
             .await
         {
             Ok(result) => result,
             Err(_) => Err(anyhow!("Operation was canceled")),
+        };
+        if result.is_ok() {
+            refresh_branches(&repository, cx).await;
         }
+        result
     })
     .detach_and_prompt_err(error_title, window, cx, |_, _, _| None);
 }

@@ -180,6 +180,24 @@ fn fast_forwards_a_branch_that_is_not_checked_out() -> Result<()> {
 }
 
 #[test]
+fn fetches_only_the_requested_branch() -> Result<()> {
+    let (_temp, remote, local) = remote_and_clone()?;
+    run(&remote, &["branch", "other"])?;
+    run(&local, &["fetch", "-q", "origin"])?;
+    let other_before = run(&local, &["rev-parse", "origin/other"])?;
+    commit_on_branch(&remote, "feature", "1\nremote\n3\n")?;
+    commit_on_branch(&remote, "other", "1\nother\n3\n")?;
+
+    smol::block_on(fetch_branch(&repo(&local), "origin", "feature"))?;
+    assert_eq!(
+        run(&local, &["rev-parse", "origin/feature"])?,
+        run(&remote, &["rev-parse", "feature"])?
+    );
+    assert_eq!(run(&local, &["rev-parse", "origin/other"])?, other_before);
+    Ok(())
+}
+
+#[test]
 fn refuses_to_update_a_diverged_branch() -> Result<()> {
     let (_temp, remote, local) = remote_and_clone()?;
     commit_on_branch(&remote, "feature", "1\nremote\n3\n")?;

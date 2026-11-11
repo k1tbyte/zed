@@ -1,4 +1,4 @@
-use super::BranchesSidebar;
+use super::{BranchesSidebar, operations::fetch_target};
 use git::repository::Branch;
 use gpui::{App, ClipboardItem, Context, Entity, SharedString, WeakEntity, Window};
 use ui::{ContextMenu, prelude::*};
@@ -62,6 +62,7 @@ pub(super) fn branch_context_menu(
             .upstream
             .as_ref()
             .is_some_and(|upstream| upstream.remote_name().is_some());
+    let can_fetch = is_local && fetch_target(branch).is_some();
     let rebase_label = sidebar
         .upgrade()
         .and_then(|sidebar| sidebar.read(cx).current_branch(cx))
@@ -79,6 +80,9 @@ pub(super) fn branch_context_menu(
         })
         .when(can_update, |menu| {
             operation_entry(menu, "Update".into(), BranchesSidebar::update)
+        })
+        .when(can_fetch, |menu| {
+            operation_entry(menu, "Fetch".into(), BranchesSidebar::fetch)
         })
         .when(is_local && !is_remote, |menu| {
             operation_entry(menu, "Push…".into(), BranchesSidebar::push)
