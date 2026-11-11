@@ -258,6 +258,7 @@ members = [
     # Extensions
     #
 
+    "extensions/launch-tasks",
     "extensions/glsl",
     "extensions/html",
     "extensions/proto",

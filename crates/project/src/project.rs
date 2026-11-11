@@ -17,6 +17,7 @@ pub mod project_search;
 pub mod project_settings;
 pub mod search;
 pub mod task_inventory;
+pub mod task_providers;
 pub mod task_store;
 pub mod telemetry_snapshot;
 pub mod terminals;
@@ -1281,6 +1282,7 @@ impl Project {
         DapStore::init(&client, cx);
         BreakpointStore::init(&client);
         context_server_store::init(cx);
+        task_providers::init(cx);
     }
 
     pub fn local(

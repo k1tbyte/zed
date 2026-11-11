@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use gpui::{App, EntityId, Task};
 use language::LanguageName;
 use semver::Version;
-use task::{SpawnInTerminal, ZedDebugConfig};
+use task::{SpawnInTerminal, TaskTemplate, ZedDebugConfig};
 use util::{paths::normalize_path, rel_path::RelPath};
 
 pub use crate::capabilities::*;
@@ -38,6 +38,15 @@ pub trait WorktreeDelegate: Send + Sync + 'static {
     async fn read_text_file(&self, path: &RelPath) -> Result<String>;
     async fn which(&self, binary_name: String) -> Option<String>;
     async fn shell_env(&self) -> Vec<(String, String)>;
+
+    /// Lists a directory as paths relative to the worktree root.
+    async fn list_directory(
+        &self,
+        _path: &RelPath,
+        _max_entries: Option<u32>,
+    ) -> Result<Vec<String>> {
+        bail!("listing directories is not supported for this worktree")
+    }
 }
 
 pub trait ProjectDelegate: Send + Sync + 'static {
@@ -188,6 +197,14 @@ pub trait Extension: Send + Sync + 'static {
         locator_name: String,
         config: SpawnInTerminal,
     ) -> Result<DebugRequest>;
+
+    async fn provide_tasks(
+        &self,
+        _provider_name: Arc<str>,
+        _worktree: Arc<dyn WorktreeDelegate>,
+    ) -> Result<Vec<TaskTemplate>> {
+        Ok(Vec::new())
+    }
 }
 
 pub fn parse_wasm_extension_version(extension_id: &str, wasm_bytes: &[u8]) -> Result<Version> {

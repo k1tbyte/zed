@@ -9,6 +9,8 @@ use wasmtime::component::{Linker, Resource};
 use super::latest;
 
 pub const MIN_VERSION: Version = Version::new(0, 6, 0);
+// Unused while the fork enables the latest version on every channel.
+#[allow(dead_code)]
 pub const MAX_VERSION: Version = Version::new(0, 7, 0);
 
 wasmtime::component::bindgen!({

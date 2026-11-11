@@ -10,6 +10,9 @@ repository = "https://github.com/zed-industries/zed"
 name = "Gleam LSP"
 language = "Gleam"
 
+[task_providers.test-tasks]
+detect = ["**/*.gleam"]
+
 [grammars.gleam]
 repository = "https://github.com/gleam-lang/tree-sitter-gleam"
 commit = "8432ffe32ccd360534837256747beb5b1c82fca1"

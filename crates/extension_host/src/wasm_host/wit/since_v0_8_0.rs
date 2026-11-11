@@ -613,6 +613,22 @@ impl HostWorktree for WasmState {
         Ok(delegate.shell_env().await.into_iter().collect())
     }
 
+    async fn list_directory(
+        &mut self,
+        delegate: Resource<Arc<dyn WorktreeDelegate>>,
+        path: String,
+        max_entries: Option<u32>,
+    ) -> wasmtime::Result<Result<Vec<String>, String>> {
+        let delegate = self.table.get(&delegate)?;
+        Ok(delegate
+            .list_directory(
+                &RelPath::new(Path::new(&path), PathStyle::Unix).into_wasmtime_result()?,
+                max_entries,
+            )
+            .await
+            .map_err(|error| error.to_string()))
+    }
+
     async fn which(
         &mut self,
         delegate: Resource<Arc<dyn WorktreeDelegate>>,

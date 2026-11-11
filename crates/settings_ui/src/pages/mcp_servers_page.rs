@@ -674,6 +674,7 @@ fn extension_only_provides_context_server(manifest: &extension::ExtensionManifes
         && manifest.slash_commands.is_empty()
         && manifest.snippets.is_none()
         && manifest.debug_locators.is_empty()
+        && manifest.task_providers.is_empty()
 }
 
 // === Custom (Stdio/HTTP) MCP server add/edit form ===

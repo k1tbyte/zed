@@ -112,6 +112,7 @@ mod tests {
             capabilities: vec![],
             debug_adapters: Default::default(),
             debug_locators: Default::default(),
+            task_providers: Default::default(),
             language_model_providers: BTreeMap::default(),
         }
     }

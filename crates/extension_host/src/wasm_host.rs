@@ -36,11 +36,11 @@ use std::{
     sync::{Arc, LazyLock, OnceLock},
     time::Duration,
 };
-use task::{DebugScenario, SpawnInTerminal, TaskTemplate, ZedDebugConfig};
-use util::paths::SanitizedPath;
+use task::{DebugScenario, SpawnInTerminal, TaskTemplate, TaskTemplates, ZedDebugConfig};
+use util::{ResultExt as _, paths::SanitizedPath};
 use wasmtime::{
     CacheStore, Engine, Store,
-    component::{Component, ResourceTable},
+    component::{Component, Resource, ResourceTable},
 };
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 use wit::Extension;
@@ -532,6 +532,32 @@ impl extension::Extension for WasmExtension {
                     .call_run_dap_locator(store, locator_name, config)
                     .await?
                     .map_err(|err| store.data().extension_error(err))
+            }
+            .boxed()
+        })
+        .await?
+    }
+
+    async fn provide_tasks(
+        &self,
+        provider_name: Arc<str>,
+        worktree: Arc<dyn WorktreeDelegate>,
+    ) -> Result<Vec<TaskTemplate>> {
+        self.call(|extension, store| {
+            async move {
+                let resource = store.data_mut().table.push(worktree)?;
+                let handle = resource.rep();
+                let tasks = extension
+                    .call_provide_tasks(store, provider_name, resource)
+                    .await;
+                // The delegate holds a worktree snapshot, so it must not outlive the call.
+                store
+                    .data_mut()
+                    .table
+                    .delete(Resource::<Arc<dyn WorktreeDelegate>>::new_own(handle))
+                    .log_err();
+                let tasks = tasks?.map_err(|err| store.data().extension_error(err))?;
+                Ok(serde_json::from_str::<TaskTemplates>(&tasks)?.0)
             }
             .boxed()
         })

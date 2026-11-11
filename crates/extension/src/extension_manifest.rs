@@ -123,6 +123,8 @@ pub struct ExtensionManifest {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub debug_locators: BTreeMap<Arc<str>, DebugLocatorManifestEntry>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub task_providers: BTreeMap<Arc<str>, TaskProviderManifestEntry>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub language_model_providers: BTreeMap<Arc<str>, LanguageModelProviderManifestEntry>,
 }
 
@@ -309,6 +311,14 @@ pub struct DebugAdapterManifestEntry {
 
 #[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize)]
 pub struct DebugLocatorManifestEntry {}
+
+/// Manifest entry for a task provider.
+#[derive(Clone, PartialEq, Eq, Debug, Default, Deserialize, Serialize)]
+pub struct TaskProviderManifestEntry {
+    /// Globs relative to the worktree root. They must cover every file the provider reads.
+    #[serde(default)]
+    pub detect: Vec<String>,
+}
 
 /// Manifest entry for a language model provider.
 #[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize)]
@@ -521,6 +531,7 @@ fn manifest_from_old_manifest(
         capabilities: Vec::new(),
         debug_adapters: Default::default(),
         debug_locators: Default::default(),
+        task_providers: Default::default(),
         language_model_providers: Default::default(),
     }
 }
@@ -555,6 +566,7 @@ mod tests {
             capabilities: vec![],
             debug_adapters: Default::default(),
             debug_locators: Default::default(),
+            task_providers: Default::default(),
             language_model_providers: BTreeMap::default(),
         }
     }

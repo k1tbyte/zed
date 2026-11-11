@@ -31,6 +31,7 @@ pub struct ExtensionHostProxy {
     snippet_proxy: RwLock<Option<Arc<dyn ExtensionSnippetProxy>>>,
     context_server_proxy: RwLock<Option<Arc<dyn ExtensionContextServerProxy>>>,
     debug_adapter_provider_proxy: RwLock<Option<Arc<dyn ExtensionDebugAdapterProviderProxy>>>,
+    task_provider_proxy: RwLock<Option<Arc<dyn ExtensionTaskProviderProxy>>>,
     language_model_provider_proxy: RwLock<Option<Arc<dyn ExtensionLanguageModelProviderProxy>>>,
 }
 
@@ -56,6 +57,7 @@ impl ExtensionHostProxy {
             snippet_proxy: RwLock::default(),
             context_server_proxy: RwLock::default(),
             debug_adapter_provider_proxy: RwLock::default(),
+            task_provider_proxy: RwLock::default(),
             language_model_provider_proxy: RwLock::default(),
         }
     }
@@ -88,6 +90,10 @@ impl ExtensionHostProxy {
         self.debug_adapter_provider_proxy
             .write()
             .replace(Arc::new(proxy));
+    }
+
+    pub fn register_task_provider_proxy(&self, proxy: impl ExtensionTaskProviderProxy) {
+        self.task_provider_proxy.write().replace(Arc::new(proxy));
     }
 
     pub fn register_language_model_provider_proxy(
@@ -413,6 +419,41 @@ impl ExtensionDebugAdapterProviderProxy for ExtensionHostProxy {
         };
 
         proxy.unregister_debug_locator(locator_name)
+    }
+}
+
+pub trait ExtensionTaskProviderProxy: Send + Sync + 'static {
+    fn register_task_provider(
+        &self,
+        extension: Arc<dyn Extension>,
+        provider_name: Arc<str>,
+        detect: Vec<String>,
+        cx: &mut App,
+    );
+    fn unregister_task_provider(&self, provider_name: Arc<str>, cx: &mut App);
+}
+
+impl ExtensionTaskProviderProxy for ExtensionHostProxy {
+    fn register_task_provider(
+        &self,
+        extension: Arc<dyn Extension>,
+        provider_name: Arc<str>,
+        detect: Vec<String>,
+        cx: &mut App,
+    ) {
+        let Some(proxy) = self.task_provider_proxy.read().clone() else {
+            return;
+        };
+
+        proxy.register_task_provider(extension, provider_name, detect, cx)
+    }
+
+    fn unregister_task_provider(&self, provider_name: Arc<str>, cx: &mut App) {
+        let Some(proxy) = self.task_provider_proxy.read().clone() else {
+            return;
+        };
+
+        proxy.unregister_task_provider(provider_name, cx)
     }
 }
 

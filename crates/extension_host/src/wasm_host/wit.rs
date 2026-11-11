@@ -58,13 +58,9 @@ pub fn is_supported_wasm_api_version(release_channel: ReleaseChannel, version: V
 /// Returns the Wasm API version range that is supported by the Wasm host.
 #[inline(always)]
 pub fn wasm_api_version_range(release_channel: ReleaseChannel) -> RangeInclusive<Version> {
-    // Note: The release channel can be used to stage a new version of the extension API.
+    // Fork: the unreleased API version is enabled on every channel (task providers).
     let _ = release_channel;
-
-    let max_version = match release_channel {
-        ReleaseChannel::Dev | ReleaseChannel::Nightly => latest::MAX_VERSION,
-        ReleaseChannel::Stable | ReleaseChannel::Preview => since_v0_6_0::MAX_VERSION,
-    };
+    let max_version = latest::MAX_VERSION;
 
     since_v0_0_1::MIN_VERSION..=max_version
 }
@@ -75,18 +71,8 @@ pub fn wasm_api_version_range(release_channel: ReleaseChannel) -> RangeInclusive
 pub fn authorize_access_to_unreleased_wasm_api_version(
     release_channel: ReleaseChannel,
 ) -> Result<()> {
-    let allow_unreleased_version = match release_channel {
-        ReleaseChannel::Dev | ReleaseChannel::Nightly => true,
-        ReleaseChannel::Stable | ReleaseChannel::Preview => {
-            // We always allow the latest in tests so that the extension tests pass on release branches.
-            cfg!(any(test, feature = "test-support"))
-        }
-    };
-
-    anyhow::ensure!(
-        allow_unreleased_version,
-        "unreleased versions of the extension API can only be used on development builds of Zed"
-    );
+    // Fork: the unreleased API version is enabled on every channel (task providers).
+    let _ = release_channel;
 
     Ok(())
 }
@@ -1282,6 +1268,23 @@ impl Extension {
             | Extension::V0_0_4(_)
             | Extension::V0_0_1(_) => Err(wasmtime::Error::msg(
                 "`run_dap_locator` not available prior to v0.6.0",
+            )),
+        }
+    }
+
+    pub async fn call_provide_tasks(
+        &self,
+        store: &mut Store<WasmState>,
+        provider_name: Arc<str>,
+        resource: Resource<Arc<dyn WorktreeDelegate>>,
+    ) -> wasmtime::Result<Result<String, String>> {
+        match self {
+            Extension::V0_8_0(ext) => {
+                ext.call_provide_tasks(store, &provider_name, resource)
+                    .await
+            }
+            _ => Err(wasmtime::Error::msg(
+                "`provide_tasks` not available prior to v0.8.0",
             )),
         }
     }

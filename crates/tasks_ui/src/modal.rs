@@ -485,7 +485,9 @@ impl PickerDelegate for TasksModalDelegate {
         let icon = match source_kind {
             TaskSourceKind::UserInput => Some(Icon::new(IconName::Terminal)),
             TaskSourceKind::AbsPath { .. } => Some(Icon::new(IconName::Settings)),
-            TaskSourceKind::Worktree { .. } => Some(Icon::new(IconName::FileTree)),
+            TaskSourceKind::Worktree { .. } | TaskSourceKind::Extension { .. } => {
+                Some(Icon::new(IconName::FileTree))
+            }
             TaskSourceKind::Lsp {
                 language_name: name,
                 ..

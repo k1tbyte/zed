@@ -18,7 +18,8 @@ use extension::extension_builder::{CompileExtensionOptions, ExtensionBuilder};
 use extension::{
     ExtensionContextServerProxy, ExtensionDebugAdapterProviderProxy, ExtensionEvents,
     ExtensionGrammarProxy, ExtensionHostProxy, ExtensionLanguageProxy,
-    ExtensionLanguageServerProxy, ExtensionSnippetProxy, ExtensionThemeProxy,
+    ExtensionLanguageServerProxy, ExtensionSnippetProxy, ExtensionTaskProviderProxy,
+    ExtensionThemeProxy,
 };
 use fs::{Fs, RemoveOptions, RenameOptions};
 use futures::future::{Shared, join_all};
@@ -1421,6 +1422,9 @@ impl ExtensionStore {
             for locator in extension.manifest.debug_locators.keys() {
                 self.proxy.unregister_debug_locator(locator.clone());
             }
+            for provider in extension.manifest.task_providers.keys() {
+                self.proxy.unregister_task_provider(provider.clone(), cx);
+            }
         }
 
         self.wasm_extensions
@@ -1733,6 +1737,15 @@ impl ExtensionStore {
                     for debug_adapter in manifest.debug_locators.keys() {
                         this.proxy
                             .register_debug_locator(extension.clone(), debug_adapter.clone());
+                    }
+
+                    for (provider, entry) in &manifest.task_providers {
+                        this.proxy.register_task_provider(
+                            extension.clone(),
+                            provider.clone(),
+                            entry.detect.clone(),
+                            cx,
+                        );
                     }
                 }
 

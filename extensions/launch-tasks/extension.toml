@@ -1,0 +1,13 @@
+id = "launch-tasks"
+name = "Launch Tasks"
+description = "Build, run, watch and test tasks generated from the project files of a worktree."
+version = "0.1.0"
+schema_version = 1
+authors = ["k1tbyte"]
+repository = "https://github.com/k1tbyte/zed"
+
+[task_providers.dotnet]
+detect = ["**/*.sln", "**/*.slnx", "**/*.csproj", "**/*.fsproj", "**/*.vbproj", "**/launchSettings.json"]
+
+[task_providers.npm]
+detect = ["**/package.json", "**/bun.lock", "**/bun.lockb", "**/pnpm-lock.yaml", "**/pnpm-workspace.yaml", "**/yarn.lock", "**/package-lock.json", "**/npm-shrinkwrap.json"]

@@ -301,9 +301,18 @@ where
                         )
                     })
                     .unwrap_or_default();
-                task_inventory
+                let worktree = task_contexts.worktree();
+                let extension_tasks = task_inventory.update(cx, |inventory, cx| {
+                    inventory.extension_templates(worktree, cx)
+                });
+                let tasks = task_inventory
                     .read(cx)
-                    .list_tasks(buffer, language, task_contexts.worktree(), cx)
+                    .list_tasks(buffer, language, worktree, cx);
+                cx.background_spawn(async move {
+                    let mut tasks = tasks.await;
+                    tasks.extend(extension_tasks.await);
+                    tasks
+                })
             })?
             .await;
 

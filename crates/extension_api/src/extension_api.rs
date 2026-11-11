@@ -281,6 +281,18 @@ pub trait Extension: Send + Sync {
     ) -> Result<DebugRequest, String> {
         Err("`run_dap_locator` not implemented".to_string())
     }
+
+    /// Returns the task templates of the given task provider for a worktree, in the `tasks.json` format.
+    ///
+    /// Zed calls this only when a file matching the provider's `detect` globs exists, and caches the result
+    /// until such a file changes, so `detect` must cover every file read here.
+    fn provide_tasks(
+        &mut self,
+        _provider_name: String,
+        _worktree: &Worktree,
+    ) -> Result<Vec<serde_json::Value>, String> {
+        Ok(Vec::new())
+    }
 }
 
 /// Registers the provided type as a Zed extension.
@@ -558,6 +570,10 @@ impl wit::Guest for Component {
         build_task: TaskTemplate,
     ) -> Result<DebugRequest, String> {
         extension().run_dap_locator(locator_name, build_task)
+    }
+    fn provide_tasks(provider_name: String, worktree: &Worktree) -> Result<String, String> {
+        let tasks = extension().provide_tasks(provider_name, worktree)?;
+        serde_json::to_string(&tasks).map_err(|error| error.to_string())
     }
 }
 

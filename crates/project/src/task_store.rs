@@ -6,7 +6,7 @@ use std::{
 use anyhow::Context as _;
 use collections::HashMap;
 use fs::Fs;
-use gpui::{App, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
+use gpui::{App, AppContext as _, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
 use language::{
     ContextLocation, ContextProvider as _, LanguageToolchainStore, Location,
     proto::{deserialize_anchor, serialize_anchor},
@@ -19,7 +19,7 @@ use util::ResultExt;
 
 use crate::{
     BasicContextProvider, Inventory, ProjectEnvironment, buffer_store::BufferStore,
-    git_store::GitStore, worktree_store::WorktreeStore,
+    git_store::GitStore, task_providers::ExtensionTasks, worktree_store::WorktreeStore,
 };
 
 // platform-dependent warning
@@ -167,12 +167,18 @@ impl TaskStore {
         git_store: Entity<GitStore>,
         cx: &mut Context<Self>,
     ) -> Self {
+        let task_inventory = Inventory::new(cx);
+        let extension_tasks =
+            cx.new(|cx| ExtensionTasks::new(worktree_store.clone(), environment.clone(), cx));
+        task_inventory.update(cx, |inventory, _| {
+            inventory.set_extension_tasks(extension_tasks)
+        });
         Self::Functional(StoreState {
             mode: StoreMode::Local {
                 downstream_client: None,
                 environment,
             },
-            task_inventory: Inventory::new(cx),
+            task_inventory,
             buffer_store,
             git_store,
             toolchain_store,

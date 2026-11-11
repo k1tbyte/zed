@@ -16,9 +16,9 @@ use collections::{BTreeMap, HashMap, HashSet};
 use extension::{
     BuildTaskTemplate, CodeLabel, Command, Completion, ContextServerConfiguration,
     DebugAdapterBinary, DebugRequest, DebugScenario, DebugTaskDefinition, Extension,
-    ExtensionHostProxy, KeyValueStoreDelegate, LibManifestEntry, ProjectDelegate, SlashCommand,
-    SlashCommandArgumentCompletion, SlashCommandOutput, StartDebuggingRequestArgumentsRequest,
-    Symbol, WorktreeDelegate,
+    ExtensionHostProxy, ExtensionTaskProviderProxy, KeyValueStoreDelegate, LibManifestEntry,
+    ProjectDelegate, SlashCommand, SlashCommandArgumentCompletion, SlashCommandOutput,
+    StartDebuggingRequestArgumentsRequest, Symbol, WorktreeDelegate,
 };
 use fs::{FakeFs, Fs, RealFs, RemoveOptions};
 use futures::{AsyncReadExt, FutureExt, StreamExt, io::BufReader};
@@ -49,7 +49,7 @@ use std::{
     },
     time::{Duration, SystemTime},
 };
-use task::{SpawnInTerminal, ZedDebugConfig};
+use task::{SpawnInTerminal, TaskTemplate, ZedDebugConfig};
 use theme::ThemeRegistry;
 use util::{rel_path::rel_path_buf, test::TempTree};
 
@@ -403,6 +403,7 @@ async fn test_extension_store(cx: &mut TestAppContext) {
                         capabilities: Vec::new(),
                         debug_adapters: Default::default(),
                         debug_locators: Default::default(),
+                        task_providers: Default::default(),
                         language_model_providers: BTreeMap::default(),
                     }),
                     dev: false,
@@ -434,6 +435,7 @@ async fn test_extension_store(cx: &mut TestAppContext) {
                         capabilities: Vec::new(),
                         debug_adapters: Default::default(),
                         debug_locators: Default::default(),
+                        task_providers: Default::default(),
                         language_model_providers: BTreeMap::default(),
                     }),
                     dev: false,
@@ -620,6 +622,7 @@ async fn test_extension_store(cx: &mut TestAppContext) {
                 capabilities: Vec::new(),
                 debug_adapters: Default::default(),
                 debug_locators: Default::default(),
+                task_providers: Default::default(),
                 language_model_providers: BTreeMap::default(),
             }),
             dev: false,
@@ -772,6 +775,39 @@ async fn test_extension_store(cx: &mut TestAppContext) {
         );
         assert_eq!(language_registry.grammar_names(), []);
     });
+}
+
+struct TaskWorktree;
+
+#[async_trait]
+impl WorktreeDelegate for TaskWorktree {
+    fn id(&self) -> u64 {
+        1
+    }
+
+    fn root_path(&self) -> String {
+        "/root".into()
+    }
+
+    async fn read_text_file(&self, _path: &util::rel_path::RelPath) -> anyhow::Result<String> {
+        Ok("hello".into())
+    }
+
+    async fn which(&self, _binary_name: String) -> Option<String> {
+        None
+    }
+
+    async fn shell_env(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
+    async fn list_directory(
+        &self,
+        _path: &util::rel_path::RelPath,
+        _max_entries: Option<u32>,
+    ) -> anyhow::Result<Vec<String>> {
+        Ok(vec!["a.txt".into(), "src/".into()])
+    }
 }
 
 #[gpui::test]
@@ -1043,6 +1079,23 @@ async fn test_extension_store_with_test_extension(cx: &mut TestAppContext) {
     assert!(work_dir.join("file-created-with-abs-path").exists());
     assert!(work_dir.join("file-created-with-rel-path").exists());
 
+    let wasm_extension =
+        extension_store.read_with(cx, |store, _| store.wasm_extensions[0].1.clone());
+    // Twice, to cover releasing the worktree handle after a call.
+    for _ in 0..2 {
+        let tasks = await_or_timeout(
+            &executor,
+            "awaiting provide_tasks",
+            10,
+            wasm_extension.provide_tasks("test-tasks".into(), Arc::new(TaskWorktree)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].label, "test-tasks: a.txt,src/");
+        assert_eq!(tasks[0].args, ["hello"]);
+    }
+
     assert_eq!(fake_server.binary.path, expected_server_path);
     assert_eq!(fake_server.binary.arguments, [OsString::from("lsp")]);
     assert_eq!(
@@ -1283,6 +1336,124 @@ async fn test_extension_store_with_test_extension(cx: &mut TestAppContext) {
         .unwrap()
         .is_none()
     );
+}
+
+#[gpui::test]
+async fn test_extension_task_providers(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        "/root",
+        json!({
+            "app.sln": "",
+            ".aaa.sln": "",
+            ".gitignore": "ignored\n.aaa.sln",
+            "ignored": { "a.sln": "" },
+            "src": { "main.cs": "" },
+        }),
+    )
+    .await;
+    let project = Project::test(fs.clone(), ["/root".as_ref()], cx).await;
+    cx.update(|cx| {
+        project::task_providers::init(cx);
+        let proxy = ExtensionHostProxy::default_global(cx);
+        proxy.register_task_provider(
+            Arc::new(FakeExtension),
+            "fake".into(),
+            vec!["**/*.sln".into()],
+            cx,
+        );
+        proxy.register_task_provider(
+            Arc::new(FakeExtension),
+            "unmatched".into(),
+            vec!["**/*.fsproj".into()],
+            cx,
+        );
+    });
+    let (worktree_id, inventory) = project.read_with(cx, |project, cx| {
+        (
+            project.worktrees(cx).next().unwrap().read(cx).id(),
+            project
+                .task_store()
+                .read(cx)
+                .task_inventory()
+                .unwrap()
+                .clone(),
+        )
+    });
+    let list = |cx: &mut TestAppContext| {
+        inventory.update(cx, |inventory, cx| {
+            inventory.extension_templates(Some(worktree_id), cx)
+        })
+    };
+
+    let templates = list(cx).await;
+    assert_eq!(templates.len(), 1);
+    assert_eq!(templates[0].1.label, "fake: .gitignore,app.sln,src/");
+    assert_eq!(
+        templates[0].0,
+        project::task_inventory::TaskSourceKind::Extension {
+            provider: "fake".into(),
+            worktree: worktree_id,
+        }
+    );
+    assert_eq!(PROVIDE_TASKS_CALLS.load(Ordering::SeqCst), 1);
+
+    list(cx).await;
+    assert_eq!(PROVIDE_TASKS_CALLS.load(Ordering::SeqCst), 1, "cached");
+
+    fs.insert_file("/root/src/other.cs", Vec::new()).await;
+    cx.executor().run_until_parked();
+    list(cx).await;
+    assert_eq!(
+        PROVIDE_TASKS_CALLS.load(Ordering::SeqCst),
+        1,
+        "unrelated file"
+    );
+
+    fs.insert_file("/root/other.sln", Vec::new()).await;
+    cx.executor().run_until_parked();
+    let templates = list(cx).await;
+    assert_eq!(
+        PROVIDE_TASKS_CALLS.load(Ordering::SeqCst),
+        2,
+        "detect match"
+    );
+    assert_eq!(
+        templates[0].1.label,
+        "fake: .gitignore,app.sln,other.sln,src/"
+    );
+
+    let task_contexts = Arc::new(project::task_inventory::TaskContexts {
+        active_worktree_context: Some((worktree_id, task::TaskContext::default())),
+        ..Default::default()
+    });
+    let used_tasks = |cx: &mut TestAppContext| {
+        let task_contexts = task_contexts.clone();
+        let tasks = inventory.update(cx, |inventory, cx| {
+            inventory.used_and_current_resolved_tasks(task_contexts, cx)
+        });
+        async move { tasks.await.0 }
+    };
+    let (_, current_tasks) = inventory
+        .update(cx, |inventory, cx| {
+            inventory.used_and_current_resolved_tasks(task_contexts.clone(), cx)
+        })
+        .await;
+    let (kind, resolved_task) = current_tasks.into_iter().next().unwrap();
+    inventory.update(cx, |inventory, _| {
+        inventory.task_scheduled(kind, resolved_task)
+    });
+    assert_eq!(used_tasks(cx).await.len(), 1, "still provided");
+
+    fs.insert_file("/root/third.sln", Vec::new()).await;
+    cx.executor().run_until_parked();
+    assert!(used_tasks(cx).await.is_empty(), "no longer provided");
+
+    cx.update(|cx| {
+        ExtensionHostProxy::default_global(cx).unregister_task_provider("fake".into(), cx)
+    });
+    assert!(list(cx).await.is_empty(), "unregistered");
 }
 
 fn init_test(cx: &mut TestAppContext) {
@@ -4197,6 +4368,7 @@ impl Extension for FakeExtension {
             capabilities: Vec::new(),
             debug_adapters: BTreeMap::default(),
             debug_locators: BTreeMap::default(),
+            task_providers: BTreeMap::default(),
             language_model_providers: BTreeMap::default(),
         })
     }
@@ -4376,4 +4548,22 @@ impl Extension for FakeExtension {
     ) -> anyhow::Result<DebugRequest> {
         anyhow::bail!("not supported by FakeExtension")
     }
+
+    async fn provide_tasks(
+        &self,
+        provider_name: Arc<str>,
+        worktree: Arc<dyn WorktreeDelegate>,
+    ) -> anyhow::Result<Vec<TaskTemplate>> {
+        PROVIDE_TASKS_CALLS.fetch_add(1, Ordering::SeqCst);
+        let entries = worktree
+            .list_directory(util::rel_path::RelPath::empty(), None)
+            .await?;
+        Ok(vec![TaskTemplate {
+            label: format!("{provider_name}: {}", entries.join(",")),
+            command: "echo".into(),
+            ..Default::default()
+        }])
+    }
 }
+
+static PROVIDE_TASKS_CALLS: AtomicUsize = AtomicUsize::new(0);

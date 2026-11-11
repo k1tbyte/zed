@@ -1086,6 +1086,9 @@ impl DebugDelegate {
                 Some(format!("LSP: {language_name}"))
             }
             Some(TaskSourceKind::Language { name }) => Some(format!("Language: {name}")),
+            Some(TaskSourceKind::Extension { provider, .. }) => {
+                Some(format!("Extension: {provider}"))
+            }
             _ => context.clone().and_then(|ctx| {
                 ctx.task_context
                     .task_variables
@@ -1560,7 +1563,9 @@ impl PickerDelegate for DebugDelegate {
         let (icon, indicator) = match task_kind {
             Some(TaskSourceKind::UserInput) => (Some(Icon::new(IconName::Terminal)), None),
             Some(TaskSourceKind::AbsPath { .. }) => (Some(Icon::new(IconName::Settings)), None),
-            Some(TaskSourceKind::Worktree { .. }) => (Some(Icon::new(IconName::FileTree)), None),
+            Some(TaskSourceKind::Worktree { .. } | TaskSourceKind::Extension { .. }) => {
+                (Some(Icon::new(IconName::FileTree)), None)
+            }
             Some(TaskSourceKind::Lsp { language_name, .. }) => (
                 file_icons::FileIcons::get(cx)
                     .get_icon_for_type(&language_name.to_lowercase(), cx)

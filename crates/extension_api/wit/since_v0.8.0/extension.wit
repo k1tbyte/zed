@@ -72,6 +72,11 @@ world extension {
         root-path: func() -> string;
         /// Returns the textual contents of the specified file in the worktree.
         read-text-file: func(path: string) -> result<string, string>;
+        /// Lists the non-ignored entries of a directory in the worktree, as paths relative to the
+        /// worktree root. Directories end with `/`. The host caps the number of entries.
+        ///
+        /// Not supported when called from a debug adapter.
+        list-directory: func(path: string, max-entries: option<u32>) -> result<list<string>, string>;
         /// Returns the path to the given binary name, if one is present on the `$PATH`.
         which: func(binary-name: string) -> option<string>;
         /// Returns the current shell environment.
@@ -176,4 +181,7 @@ world extension {
     export dap-config-to-scenario: func(config: debug-config) -> result<debug-scenario, string>;
     export dap-locator-create-scenario: func(locator-name: string, build-config-template: build-task-template, resolved-label: string, debug-adapter-name: string) -> option<debug-scenario>;
     export run-dap-locator: func(locator-name: string, config: resolved-task) -> result<debug-request, string>;
+
+    /// Returns the task templates of a task provider as a JSON array in the `tasks.json` format.
+    export provide-tasks: func(provider-name: string, worktree: borrow<worktree>) -> result<string, string>;
 }

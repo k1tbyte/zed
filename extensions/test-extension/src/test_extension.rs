@@ -139,6 +139,20 @@ impl zed::Extension for TestExtension {
         }
     }
 
+    fn provide_tasks(
+        &mut self,
+        provider_name: String,
+        worktree: &zed::Worktree,
+    ) -> Result<Vec<zed::serde_json::Value>> {
+        let entries = worktree.list_directory("", None)?;
+        let contents = worktree.read_text_file("a.txt")?;
+        Ok(vec![zed::serde_json::json!({
+            "label": format!("{provider_name}: {}", entries.join(",")),
+            "command": "echo",
+            "args": [contents],
+        })])
+    }
+
     fn language_server_command(
         &mut self,
         language_server_id: &LanguageServerId,
