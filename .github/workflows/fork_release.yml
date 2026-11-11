@@ -46,11 +46,13 @@ jobs:
           sw_vers
           xcodebuild -version
           df -h /
-      # Dependencies and the tools the script installs; only the default branch's cache reaches tag runs.
+      # Dependencies and the tools the script installs; only the default branch's cache reaches tag runs,
+      # so tags just restore it and a manual run on mine refreshes it.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: fork-macos
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/mine' }}
       - name: Bundle
         run: ./script/bundle-mac aarch64-apple-darwin
       - uses: actions/upload-artifact@v4
@@ -89,6 +91,7 @@ jobs:
         with:
           shared-key: fork-windows-target
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/mine' }}
           cache-targets: false
           cache-directories: C:/zed-target
       - name: Bundle
