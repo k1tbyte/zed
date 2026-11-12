@@ -53,7 +53,10 @@ jobs:
           shared-key: fork-macos
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/mine' }}
+      # SSH hosts download upstream's remote server, so ours is never used.
       - name: Bundle
+        env:
+          ZED_SKIP_REMOTE_SERVER: true
         run: ./script/bundle-mac aarch64-apple-darwin
       - uses: actions/upload-artifact@v4
         with:
