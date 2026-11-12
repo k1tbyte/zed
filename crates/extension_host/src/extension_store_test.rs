@@ -1456,6 +1456,46 @@ async fn test_extension_task_providers(cx: &mut TestAppContext) {
     assert!(list(cx).await.is_empty(), "unregistered");
 }
 
+#[gpui::test]
+async fn test_hung_task_provider_is_waited_for_once(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree("/root", json!({ "app.sln": "" })).await;
+    let project = Project::test(fs.clone(), ["/root".as_ref()], cx).await;
+    cx.update(|cx| {
+        project::task_providers::init(cx);
+        ExtensionHostProxy::default_global(cx).register_task_provider(
+            Arc::new(FakeExtension),
+            "hung".into(),
+            vec!["**/*.sln".into()],
+            cx,
+        );
+    });
+    let (worktree_id, inventory) = project.read_with(cx, |project, cx| {
+        (
+            project.worktrees(cx).next().unwrap().read(cx).id(),
+            project
+                .task_store()
+                .read(cx)
+                .task_inventory()
+                .unwrap()
+                .clone(),
+        )
+    });
+    let list = |cx: &mut TestAppContext| {
+        inventory.update(cx, |inventory, cx| {
+            inventory.extension_templates(Some(worktree_id), cx)
+        })
+    };
+
+    let templates = list(cx);
+    cx.executor().advance_clock(Duration::from_secs(60));
+    assert!(templates.await.is_empty(), "skipped at the deadline");
+
+    // The clock stands still here, so this only returns when nothing waits for the provider.
+    assert!(list(cx).await.is_empty(), "not waited for again");
+}
+
 fn init_test(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let store = SettingsStore::test(cx);
@@ -4554,6 +4594,9 @@ impl Extension for FakeExtension {
         provider_name: Arc<str>,
         worktree: Arc<dyn WorktreeDelegate>,
     ) -> anyhow::Result<Vec<TaskTemplate>> {
+        if &*provider_name == "hung" {
+            futures::future::pending::<()>().await;
+        }
         PROVIDE_TASKS_CALLS.fetch_add(1, Ordering::SeqCst);
         let entries = worktree
             .list_directory(util::rel_path::RelPath::empty(), None)

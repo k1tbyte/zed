@@ -9,7 +9,7 @@ use extension::{Extension, ExtensionHostProxy, ExtensionTaskProviderProxy, Workt
 use fs::Fs;
 use futures::{
     FutureExt as _,
-    future::{self, Either, Shared},
+    future::{self, Shared},
 };
 use gpui::{App, AppContext as _, Context, Entity, Global, SharedString, Subscription, Task};
 use settings::WorktreeId;
@@ -97,8 +97,14 @@ pub struct ExtensionTasks {
     worktree_store: Entity<WorktreeStore>,
     environment: Entity<ProjectEnvironment>,
     // Dropping an entry is the only invalidation, so a stale run can never repopulate it.
-    cache: HashMap<(Arc<str>, WorktreeId), Shared<Task<Arc<[TaskTemplate]>>>>,
+    cache: HashMap<(Arc<str>, WorktreeId), CachedTemplates>,
     _subscriptions: [Subscription; 2],
+}
+
+struct CachedTemplates {
+    task: Shared<Task<Arc<[TaskTemplate]>>>,
+    /// Missed the deadline once: it keeps running, but no later lookup waits for it again.
+    timed_out: bool,
 }
 
 impl ExtensionTasks {
@@ -182,7 +188,7 @@ impl ExtensionTasks {
         let providers = self.registry.read(cx).providers.clone();
         let mut pending = Vec::with_capacity(providers.len());
         for (name, provider) in providers {
-            let task = self
+            let cached = self
                 .cache
                 .entry((name.clone(), worktree_id))
                 .or_insert_with(|| {
@@ -192,32 +198,57 @@ impl ExtensionTasks {
                         environment: environment.clone(),
                     });
                     let name = name.clone();
-                    cx.background_spawn(async move { provider.templates(&name, delegate).await })
-                        .shared()
-                })
-                .clone();
-            pending.push((SharedString::from(name), task));
+                    let task = cx
+                        .background_spawn(async move { provider.templates(&name, delegate).await })
+                        .shared();
+                    CachedTemplates {
+                        task,
+                        timed_out: false,
+                    }
+                });
+            pending.push((name, cached.task.clone(), cached.timed_out));
         }
 
-        let executor = cx.background_executor().clone();
-        cx.background_spawn(async move {
+        // One deadline for all providers, so several slow ones do not add up.
+        let waited = future::join_all(
+            pending
+                .iter()
+                .filter(|(_, _, timed_out)| !timed_out)
+                .map(|(_, task, _)| task.clone()),
+        );
+        let deadline = cx.background_executor().timer(PROVIDER_TIMEOUT);
+        cx.spawn(async move |this, cx| {
+            future::select(waited, deadline).await;
             let mut templates = Vec::new();
-            for (provider, task) in pending {
-                match future::select(task, executor.timer(PROVIDER_TIMEOUT)).await {
-                    Either::Left((found, _)) => {
-                        let kind = TaskSourceKind::Extension {
-                            provider,
-                            worktree: worktree_id,
-                        };
-                        templates.extend(
-                            found
-                                .iter()
-                                .map(|template| (kind.clone(), template.clone())),
-                        );
+            let mut late = Vec::new();
+            for (name, task, timed_out) in pending {
+                let Some(found) = task.clone().now_or_never() else {
+                    if !timed_out {
+                        log::warn!("task provider {name} timed out");
+                        late.push((name, task));
                     }
-                    Either::Right(_) => log::warn!("task provider {provider} timed out"),
-                }
+                    continue;
+                };
+                let kind = TaskSourceKind::Extension {
+                    provider: SharedString::from(name),
+                    worktree: worktree_id,
+                };
+                templates.extend(
+                    found
+                        .iter()
+                        .map(|template| (kind.clone(), template.clone())),
+                );
             }
+            this.update(cx, |this, _| {
+                for (name, task) in late {
+                    if let Some(cached) = this.cache.get_mut(&(name, worktree_id))
+                        && cached.task.ptr_eq(&task)
+                    {
+                        cached.timed_out = true;
+                    }
+                }
+            })
+            .ok();
             templates
         })
     }
