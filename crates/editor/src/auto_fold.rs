@@ -74,6 +74,26 @@ fn find_import_block(snapshot: &BufferSnapshot) -> ImportBlock {
     }
 }
 
+/// The import block when `row` is its first line, so the gutter can offer to fold it.
+pub(crate) fn import_block_starting_at(
+    snapshot: &BufferSnapshot,
+    row: u32,
+) -> Option<Range<Point>> {
+    let layer = snapshot.syntax_layers().next()?;
+    let mut cursor = layer.node().walk();
+    // Most rows are no import, so reject them before walking the whole block.
+    cursor.goto_first_child_for_byte(snapshot.point_to_offset(Point::new(row, 0)))?;
+    let node = cursor.node();
+    let kinds = import_node_kinds(layer.language.name().as_ref());
+    if node.start_position().row != row as usize || !kinds.contains(&node.kind()) {
+        return None;
+    }
+    match find_import_block(snapshot) {
+        ImportBlock::Fold(range) if range.start.row == row => Some(range),
+        _ => None,
+    }
+}
+
 impl Editor {
     /// Runs until the file has a parsed tree, then folds at most once per editor.
     pub(super) fn auto_fold_on_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -132,6 +152,7 @@ mod tests {
     use crate::{editor_tests::init_test, test::editor_test_context::EditorTestContext};
     use gpui::{AppContext as _, TestAppContext};
     use language::rust_lang;
+    use multi_buffer::MultiBufferRow;
     use settings::AutoFoldKind;
     use text::Point;
 
@@ -230,6 +251,68 @@ mod tests {
         });
         let mut cx = open(cx, "use a;\n\nfn main() {}\nˇ").await;
         assert_eq!(display_text(&mut cx), "use a;\n\nfn main() {}\n");
+    }
+
+    #[gpui::test]
+    async fn only_the_first_import_row_offers_to_fold_the_block(cx: &mut TestAppContext) {
+        init_test(cx, |_| {});
+        let mut cx = open(cx, &format!("{FILE}ˇ")).await;
+        let creases = cx.update_editor(|editor, window, cx| {
+            let snapshot = editor.snapshot(window, cx);
+            (0..9)
+                .map(|row| {
+                    snapshot
+                        .crease_for_buffer_row(MultiBufferRow(row))
+                        .map(|crease| crease.range().clone())
+                })
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(creases[1], Some(Point::new(1, 6)..Point::new(6, 6)));
+        // Row 2 is left out: its braced body is foldable by indentation anyway.
+        for row in [0, 3, 4, 5, 6, 7] {
+            assert_eq!(creases[row], None, "row {row}");
+        }
+    }
+
+    #[gpui::test]
+    async fn expanded_deleted_lines_above_the_imports_shift_the_range_with_them(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx, |_| {});
+        let mut cx = open(cx, &format!("{FILE}ˇ")).await;
+        cx.set_head_text(&format!("// removed\n{FILE}"));
+        cx.dispatch_action(crate::ExpandAllDiffHunks);
+        cx.run_until_parked();
+
+        let creases = cx.update_editor(|editor, window, cx| {
+            let snapshot = editor.snapshot(window, cx);
+            (0..3)
+                .map(|row| {
+                    snapshot
+                        .crease_for_buffer_row(MultiBufferRow(row))
+                        .map(|crease| crease.range().clone())
+                })
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(creases[0], None, "the deleted line");
+        assert_eq!(creases[1], None, "the header comment");
+        assert_eq!(creases[2], Some(Point::new(2, 6)..Point::new(7, 6)));
+    }
+
+    #[gpui::test]
+    async fn an_unfolded_import_block_can_be_folded_again(cx: &mut TestAppContext) {
+        init_test(cx, |settings| {
+            settings.defaults.auto_fold = Some(vec![AutoFoldKind::Imports])
+        });
+        let mut cx = open(cx, &format!("{FILE}ˇ")).await;
+        cx.update_editor(|editor, window, cx| editor.unfold_at(MultiBufferRow(1), window, cx));
+        assert_eq!(display_text(&mut cx), FILE);
+
+        cx.update_editor(|editor, window, cx| editor.fold_at(MultiBufferRow(1), window, cx));
+        assert_eq!(
+            display_text(&mut cx),
+            "// header\nuse a;⋯\n\nfn main() {}\n"
+        );
     }
 
     #[gpui::test]

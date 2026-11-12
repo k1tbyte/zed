@@ -53,9 +53,15 @@ impl EditorSnapshot {
             }
         }
 
-        is_foldable |= !self.use_lsp_folding_ranges && self.starts_indent(buffer_row);
+        // This runs for every visible row of every frame, so the syntax tree is only
+        // consulted for rows that could show the toggle.
+        let shows_toggle = folded
+            || ((row_contains_cursor || self.gutter_hovered)
+                && (is_foldable
+                    || (!self.use_lsp_folding_ranges && self.starts_indent(buffer_row))
+                    || self.import_block_starting_at(buffer_row).is_some()));
 
-        if folded || (is_foldable && (row_contains_cursor || self.gutter_hovered)) {
+        if shows_toggle {
             Some(
                 Disclosure::new(("gutter_crease", buffer_row.0), !folded)
                     .toggle_state(folded)

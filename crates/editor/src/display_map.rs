@@ -2308,6 +2308,30 @@ impl DisplaySnapshot {
         DisplayRow(longest_row.0)
     }
 
+    /// Independent of LSP folding ranges: servers do not all report the import block.
+    pub(crate) fn import_block_starting_at(
+        &self,
+        buffer_row: MultiBufferRow,
+    ) -> Option<Range<Point>> {
+        let snapshot = self.buffer_snapshot();
+        let file = snapshot.as_singleton()?;
+        let (buffer, start) = snapshot.point_to_buffer_point(Point::new(buffer_row.0, 0))?;
+        // Rows of expanded deleted hunks come from the diff base, not from the file.
+        if buffer.remote_id() != file.remote_id() {
+            return None;
+        }
+        let block = crate::auto_fold::import_block_starting_at(file, start.row)?;
+        // Expanded hunks shift multibuffer rows, so the range goes back through anchors.
+        let to_multibuffer = |point: Point| {
+            Some(
+                snapshot
+                    .anchor_in_excerpt(file.anchor_after(point))?
+                    .to_point(snapshot),
+            )
+        };
+        Some(to_multibuffer(block.start)?..to_multibuffer(block.end)?)
+    }
+
     pub fn starts_indent(&self, buffer_row: MultiBufferRow) -> bool {
         let max_row = self.buffer_snapshot().max_row();
         if buffer_row >= max_row {
@@ -2394,6 +2418,14 @@ impl DisplaySnapshot {
                     render_toggle: render_toggle.clone(),
                 }),
             }
+        } else if let Some(range) = self.import_block_starting_at(buffer_row) {
+            Some(Crease::Inline {
+                range,
+                placeholder: self.fold_placeholder.clone(),
+                render_toggle: None,
+                render_trailer: None,
+                metadata: None,
+            })
         } else if !self.use_lsp_folding_ranges
             && self.starts_indent(MultiBufferRow(start.row))
             && !self.is_line_folded(MultiBufferRow(start.row))
