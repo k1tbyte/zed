@@ -53,23 +53,43 @@ impl CreaseSnapshot {
         row: MultiBufferRow,
         snapshot: &'a MultiBufferSnapshot,
     ) -> Option<&'a Crease<Anchor>> {
-        let start = snapshot.anchor_before(Point::new(row.0, 0));
+        self.query_rows([Some(row)], snapshot).pop().flatten()
+    }
+
+    /// `query_row` for each row. Visible rows ascend, so one cursor serves them all
+    /// and only seeks again where rows skip, such as over a fold.
+    #[ztracing::instrument(skip_all)]
+    pub fn query_rows<'a>(
+        &'a self,
+        rows: impl IntoIterator<Item = Option<MultiBufferRow>>,
+        snapshot: &'a MultiBufferSnapshot,
+    ) -> Vec<Option<&'a Crease<Anchor>>> {
         let mut cursor = self.creases.cursor::<ItemSummary>(snapshot);
-        cursor.seek(&start, Bias::Left);
-        while let Some(item) = cursor.item() {
-            match Ord::cmp(&item.crease.range().start.to_point(snapshot).row, &row.0) {
-                Ordering::Less => cursor.next(),
-                Ordering::Equal => {
-                    if item.crease.range().start.is_valid(snapshot) {
-                        return Some(&item.crease);
-                    } else {
-                        cursor.next();
-                    }
+        let mut next_row = None;
+        rows.into_iter()
+            .map(|row| {
+                let row = row.filter(|_| !self.creases.is_empty())?;
+                if next_row != Some(row) {
+                    cursor.seek(&snapshot.anchor_before(Point::new(row.0, 0)), Bias::Left);
                 }
-                Ordering::Greater => break,
-            }
-        }
-        None
+                next_row = Some(MultiBufferRow(row.0 + 1));
+                let mut found = None;
+                while let Some(item) = cursor.item() {
+                    let start = &item.crease.range().start;
+                    match Ord::cmp(&start.to_point(snapshot).row, &row.0) {
+                        Ordering::Greater => break,
+                        Ordering::Less => {}
+                        Ordering::Equal => {
+                            if found.is_none() && start.is_valid(snapshot) {
+                                found = Some(&item.crease);
+                            }
+                        }
+                    }
+                    cursor.next();
+                }
+                found
+            })
+            .collect()
     }
 
     #[ztracing::instrument(skip_all)]
@@ -516,5 +536,50 @@ mod test {
         let range = MultiBufferRow(6)..MultiBufferRow(7);
         let creases: Vec<_> = crease_snapshot.creases_in_range(range, &snapshot).collect();
         assert_eq!(creases.len(), 0);
+    }
+
+    #[gpui::test]
+    fn test_query_rows_matches_query_row(cx: &mut App) {
+        let text = "line1\nline2\nline3\nline4\nline5\nline6\nline7";
+        let buffer = MultiBuffer::build_simple(text, cx);
+        let snapshot = buffer.read_with(cx, |buffer, cx| buffer.snapshot(cx));
+        let mut crease_map = CreaseMap::new(&snapshot);
+        let crease = |start: u32, end: u32| {
+            Crease::inline(
+                snapshot.anchor_before(Point::new(start, 0))
+                    ..snapshot.anchor_after(Point::new(end, 5)),
+                FoldPlaceholder::test(),
+                |_row, _folded, _toggle, _window, _cx| div(),
+                |_row, _folded, _window, _cx| div(),
+            )
+        };
+        crease_map.insert(
+            [crease(1, 4), crease(1, 1), crease(3, 3), crease(5, 6)],
+            &snapshot,
+        );
+        let crease_snapshot = crease_map.snapshot();
+
+        // A skip as over a fold, a step back, a repeat and a wrapped line without a row.
+        let rows = [0, 1, 2, 5, 3, 3, 6]
+            .map(|row| Some(MultiBufferRow(row)))
+            .into_iter()
+            .chain([None, Some(MultiBufferRow(4))]);
+        let batched = crease_snapshot.query_rows(rows.clone(), &snapshot);
+        let single = rows.map(|row| row.and_then(|row| crease_snapshot.query_row(row, &snapshot)));
+        assert!(
+            batched
+                .iter()
+                .zip(single)
+                .all(|(batched, single)| batched.map(std::ptr::from_ref)
+                    == single.map(std::ptr::from_ref))
+        );
+        let start_rows: Vec<_> = batched
+            .iter()
+            .map(|crease| crease.map(|crease| crease.range().start.to_point(&snapshot).row))
+            .collect();
+        assert_eq!(
+            start_rows,
+            [None, Some(1), None, Some(5), Some(3), Some(3), None, None, None]
+        );
     }
 }

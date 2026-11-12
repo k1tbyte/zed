@@ -74,23 +74,11 @@ fn find_import_block(snapshot: &BufferSnapshot) -> ImportBlock {
     }
 }
 
-/// The import block when `row` is its first line, so the gutter can offer to fold it.
-pub(crate) fn import_block_starting_at(
-    snapshot: &BufferSnapshot,
-    row: u32,
-) -> Option<Range<Point>> {
-    let layer = snapshot.syntax_layers().next()?;
-    let mut cursor = layer.node().walk();
-    // Most rows are no import, so reject them before walking the whole block.
-    cursor.goto_first_child_for_byte(snapshot.point_to_offset(Point::new(row, 0)))?;
-    let node = cursor.node();
-    let kinds = import_node_kinds(layer.language.name().as_ref());
-    if node.start_position().row != row as usize || !kinds.contains(&node.kind()) {
-        return None;
-    }
+/// The block the gutter offers to fold from its first line.
+pub(crate) fn import_block(snapshot: &BufferSnapshot) -> Option<Range<Point>> {
     match find_import_block(snapshot) {
-        ImportBlock::Fold(range) if range.start.row == row => Some(range),
-        _ => None,
+        ImportBlock::Fold(range) => Some(range),
+        ImportBlock::NotParsed | ImportBlock::NothingToFold => None,
     }
 }
 

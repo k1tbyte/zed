@@ -19,7 +19,7 @@ use crate::{
     column_pixels,
     cursor_animation::{CursorViewport, LogicalCursorPosition, animated_corners_overlap_target},
     display_map::{
-        Block, BlockContext, BlockStyle, ChunkRendererId, DisplaySnapshot, EditorMargins,
+        Block, BlockContext, BlockStyle, ChunkRendererId, Crease, DisplaySnapshot, EditorMargins,
         HighlightKey, HighlightedChunk, ToDisplayPoint,
     },
     editor_settings::{
@@ -2959,7 +2959,8 @@ impl EditorElement {
                 Some((multi_buffer_row, segment))
             });
 
-        let mut line_numbers: HashMap<MultiBufferRow, LineNumberLayout> = HashMap::default();
+        let mut line_numbers: HashMap<MultiBufferRow, LineNumberLayout> =
+            HashMap::with_capacity_and_hasher(gutter.row_infos.len(), Default::default());
         for (buffer_row, segment) in segments {
             line_numbers
                 .entry(buffer_row)
@@ -2976,6 +2977,7 @@ impl EditorElement {
         &self,
         rows: Range<DisplayRow>,
         row_infos: &[RowInfo],
+        creases: &[Option<&Crease<Anchor>>],
         active_rows: &BTreeMap<DisplayRow, LineHighlightSpec>,
         snapshot: &EditorSnapshot,
         window: &mut Window,
@@ -2988,8 +2990,9 @@ impl EditorElement {
         if include_fold_statuses {
             row_infos
                 .iter()
+                .zip(creases)
                 .enumerate()
-                .map(|(ix, info)| {
+                .map(|(ix, (info, crease))| {
                     if info.expand_info.is_some() {
                         return None;
                     }
@@ -2997,7 +3000,14 @@ impl EditorElement {
                     let display_row = DisplayRow(rows.start.0 + ix as u32);
                     let active = active_rows.contains_key(&display_row);
 
-                    snapshot.render_crease_toggle(row, active, self.editor.clone(), window, cx)
+                    snapshot.render_crease_toggle(
+                        row,
+                        *crease,
+                        active,
+                        self.editor.clone(),
+                        window,
+                        cx,
+                    )
                 })
                 .collect()
         } else {
@@ -3007,22 +3017,20 @@ impl EditorElement {
 
     fn layout_crease_trailers(
         &self,
-        buffer_rows: impl IntoIterator<Item = RowInfo>,
+        row_infos: &[RowInfo],
+        creases: &[Option<&Crease<Anchor>>],
         snapshot: &EditorSnapshot,
         window: &mut Window,
         cx: &mut App,
     ) -> Vec<Option<AnyElement>> {
-        buffer_rows
-            .into_iter()
-            .map(|row_info| {
+        row_infos
+            .iter()
+            .zip(creases)
+            .map(|(row_info, crease)| {
                 if row_info.expand_info.is_some() {
                     return None;
                 }
-                if let Some(row) = row_info.multibuffer_row {
-                    snapshot.render_crease_trailer(row, window, cx)
-                } else {
-                    None
-                }
+                snapshot.render_crease_trailer(row_info.multibuffer_row?, *crease, window, cx)
             })
             .collect()
     }
@@ -9107,11 +9115,16 @@ impl Element for EditorElement {
                             )
                         });
 
+                    let creases = snapshot.crease_snapshot.query_rows(
+                        row_infos.iter().map(|info| info.multibuffer_row),
+                        snapshot.buffer_snapshot(),
+                    );
                     let mut crease_toggles =
                         window.with_element_namespace("crease_toggles", |window| {
                             self.layout_crease_toggles(
                                 start_row..end_row,
                                 &row_infos,
+                                &creases,
                                 &active_rows,
                                 &snapshot,
                                 window,
@@ -9121,10 +9134,7 @@ impl Element for EditorElement {
                     let crease_trailers =
                         window.with_element_namespace("crease_trailers", |window| {
                             self.layout_crease_trailers(
-                                row_infos.iter().cloned(),
-                                &snapshot,
-                                window,
-                                cx,
+                                &row_infos, &creases, &snapshot, window, cx,
                             )
                         });
 

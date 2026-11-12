@@ -10,9 +10,11 @@ impl GutterDimensions {
 }
 
 impl EditorSnapshot {
+    /// `crease` is the row's `CreaseSnapshot::query_row`, looked up for all visible rows at once.
     pub fn render_crease_toggle(
         &self,
         buffer_row: MultiBufferRow,
+        crease: Option<&Crease<Anchor>>,
         row_contains_cursor: bool,
         editor: Entity<Editor>,
         window: &mut Window,
@@ -21,10 +23,7 @@ impl EditorSnapshot {
         let folded = self.is_line_folded(buffer_row);
         let mut is_foldable = false;
 
-        if let Some(crease) = self
-            .crease_snapshot
-            .query_row(buffer_row, self.buffer_snapshot())
-        {
+        if let Some(crease) = crease {
             is_foldable = true;
             match crease {
                 Crease::Inline { render_toggle, .. } | Crease::Block { render_toggle, .. } => {
@@ -82,15 +81,13 @@ impl EditorSnapshot {
     pub fn render_crease_trailer(
         &self,
         buffer_row: MultiBufferRow,
+        crease: Option<&Crease<Anchor>>,
         window: &mut Window,
         cx: &mut App,
     ) -> Option<AnyElement> {
-        let folded = self.is_line_folded(buffer_row);
-        if let Crease::Inline { render_trailer, .. } = self
-            .crease_snapshot
-            .query_row(buffer_row, self.buffer_snapshot())?
-        {
+        if let Crease::Inline { render_trailer, .. } = crease? {
             let render_trailer = render_trailer.as_ref()?;
+            let folded = self.is_line_folded(buffer_row);
             Some(render_trailer(buffer_row, folded, window, cx))
         } else {
             None

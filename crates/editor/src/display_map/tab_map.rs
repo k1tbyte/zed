@@ -376,6 +376,10 @@ impl TabSnapshot {
 
     #[ztracing::instrument(skip_all)]
     pub fn fold_point_to_tab_point(&self, input: FoldPoint) -> TabPoint {
+        // Row starts are converted for every visible row of every frame and have no tabs before them.
+        if input.column() == 0 {
+            return TabPoint::new(input.row(), 0);
+        }
         let chunks = self.fold_snapshot.chunks_at(FoldPoint::new(input.row(), 0));
         let mut tab_cursor = TabStopCursor::new(chunks);
         let expanded = self.expand_tabs(&mut tab_cursor, &mut 0, &mut 0, input.column());
@@ -397,6 +401,9 @@ impl TabSnapshot {
 
     #[ztracing::instrument(skip_all)]
     pub fn tab_point_to_fold_point(&self, output: TabPoint, bias: Bias) -> (FoldPoint, u32, u32) {
+        if output.column() == 0 {
+            return (FoldPoint::new(output.row(), 0), 0, 0);
+        }
         let chunks = self
             .fold_snapshot
             .chunks_at(FoldPoint::new(output.row(), 0));

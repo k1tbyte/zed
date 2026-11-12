@@ -129,7 +129,7 @@ use std::{
     num::NonZeroU32,
     ops::{self, Add, Range, RangeInclusive, Sub},
     slice,
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 use crate::{
@@ -667,6 +667,7 @@ impl DisplayMap {
             masked: self.masked,
             use_lsp_folding_ranges: !self.lsp_folding_crease_ids.is_empty(),
             fold_placeholder: self.fold_placeholder.clone(),
+            import_block: OnceLock::new(),
         }
     }
 
@@ -691,6 +692,7 @@ impl DisplayMap {
             masked: self.masked,
             use_lsp_folding_ranges: !self.lsp_folding_crease_ids.is_empty(),
             fold_placeholder: self.fold_placeholder.clone(),
+            import_block: OnceLock::new(),
         }
     }
 
@@ -1518,6 +1520,8 @@ pub struct DisplaySnapshot {
     /// When true, LSP folding ranges are used via the crease map and the
     /// indent-based fallback in `crease_for_buffer_row` is skipped.
     pub(crate) use_lsp_folding_ranges: bool,
+    /// Found once: while the gutter is hovered, every visible row of every frame asks for it.
+    import_block: OnceLock<Option<Range<Point>>>,
 }
 
 impl DisplaySnapshot {
@@ -2313,14 +2317,17 @@ impl DisplaySnapshot {
         &self,
         buffer_row: MultiBufferRow,
     ) -> Option<Range<Point>> {
+        self.import_block
+            .get_or_init(|| self.import_block())
+            .as_ref()
+            .filter(|block| block.start.row == buffer_row.0)
+            .cloned()
+    }
+
+    fn import_block(&self) -> Option<Range<Point>> {
         let snapshot = self.buffer_snapshot();
         let file = snapshot.as_singleton()?;
-        let (buffer, start) = snapshot.point_to_buffer_point(Point::new(buffer_row.0, 0))?;
-        // Rows of expanded deleted hunks come from the diff base, not from the file.
-        if buffer.remote_id() != file.remote_id() {
-            return None;
-        }
-        let block = crate::auto_fold::import_block_starting_at(file, start.row)?;
+        let block = crate::auto_fold::import_block(file)?;
         // Expanded hunks shift multibuffer rows, so the range goes back through anchors.
         let to_multibuffer = |point: Point| {
             Some(

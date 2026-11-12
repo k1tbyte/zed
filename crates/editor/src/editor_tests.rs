@@ -34518,8 +34518,17 @@ fn test_crease_insertion_and_rendering(cx: &mut TestAppContext) {
 
             editor.insert_creases(Some(crease), cx);
             let snapshot = editor.snapshot(window, cx);
-            let _div =
-                snapshot.render_crease_toggle(MultiBufferRow(1), false, cx.entity(), window, cx);
+            let crease = snapshot
+                .crease_snapshot
+                .query_row(MultiBufferRow(1), snapshot.buffer_snapshot());
+            let _div = snapshot.render_crease_toggle(
+                MultiBufferRow(1),
+                crease,
+                false,
+                cx.entity(),
+                window,
+                cx,
+            );
             snapshot
         })
         .unwrap();
