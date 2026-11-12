@@ -1,4 +1,8 @@
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::{Context as _, Result};
 use futures::StreamExt as _;
@@ -8,7 +12,6 @@ use lsp::{
     MessageActionItem, Uri,
 };
 use serde::{Deserialize, Serialize};
-use util::ResultExt as _;
 
 use crate::{LanguageServerPromptRequest, LspStore, LspStoreEvent, lsp_store::LanguageServerState};
 
@@ -89,7 +92,17 @@ pub fn register_requests(lsp_store: WeakEntity<LspStore>, language_server: &Lang
                 {
                     let lsp_store = lsp_store.clone();
                     cx.spawn(async move |cx| {
-                        open_solution(lsp_store, server_id, cx).await.log_err()
+                        // Without a solution the backend stays inert, so the user has to see why.
+                        if let Err(error) = open_solution(lsp_store.clone(), server_id, cx).await {
+                            log::error!("ReSharper: {error:#}");
+                            lsp_store
+                                .update(cx, |_, cx| {
+                                    cx.emit(LspStoreEvent::Notification(format!(
+                                        "ReSharper: {error:#}"
+                                    )))
+                                })
+                                .ok();
+                        }
                     })
                     .detach();
                 }
@@ -204,6 +217,40 @@ pub(super) fn reopen_buffers(lsp_store: &LspStore, server: &LanguageServer, cx: 
     }
 }
 
+/// The shallowest solution or project file below `root`, for repositories that keep it in a
+/// folder such as `src`. A solution wins over a project at the same depth.
+async fn nested_solution(
+    lsp_store: &WeakEntity<LspStore>,
+    root: &Path,
+    cx: &mut AsyncApp,
+) -> Result<Option<PathBuf>> {
+    let worktree = lsp_store.read_with(cx, |lsp_store, cx| {
+        lsp_store.worktree_store.read(cx).find_worktree(root, cx)
+    })?;
+    let Some((worktree, root_path)) = worktree else {
+        return Ok(None);
+    };
+    let scan = worktree.read_with(cx, |worktree, _| {
+        worktree.as_local().map(|local| local.scan_complete())
+    });
+    if let Some(scan) = scan {
+        scan.await;
+    }
+    let snapshot = worktree.read_with(cx, |worktree, _| worktree.snapshot());
+    Ok(snapshot
+        .files(false, 0)
+        .filter(|entry| entry.path.starts_with(&root_path))
+        .filter_map(|entry| {
+            let extension = entry.path.extension()?;
+            let rank = SOLUTION_EXTENSIONS
+                .iter()
+                .position(|known| *known == extension)?;
+            Some(((entry.path.components().count(), rank), &entry.path))
+        })
+        .min_by_key(|(key, _)| *key)
+        .map(|(_, path)| snapshot.absolutize(path)))
+}
+
 async fn open_solution(
     lsp_store: WeakEntity<LspStore>,
     server_id: LanguageServerId,
@@ -230,15 +277,18 @@ async fn open_solution(
         .collect()
         .await;
     candidates.sort();
-    let solution = SOLUTION_EXTENSIONS
-        .iter()
-        .find_map(|extension| {
-            candidates
-                .iter()
-                .find(|path| path.extension().is_some_and(|found| found == *extension))
-        })
-        .with_context(|| format!("no .slnx, .sln or .csproj found in {root:?}"))?;
-    let solution_or_project_file_uri = Uri::from_file_path(solution)
+    let in_root = SOLUTION_EXTENSIONS.iter().find_map(|extension| {
+        candidates
+            .iter()
+            .find(|path| path.extension().is_some_and(|found| found == *extension))
+    });
+    let solution = match in_root {
+        Some(solution) => solution.clone(),
+        None => nested_solution(&lsp_store, &root, cx)
+            .await?
+            .with_context(|| format!("no .slnx, .sln or .csproj found under {root:?}"))?,
+    };
+    let solution_or_project_file_uri = Uri::from_file_path(&solution)
         .ok()
         .with_context(|| format!("{solution:?} is not a valid URI"))?;
 

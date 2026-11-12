@@ -1,6 +1,6 @@
 use anyhow::{Context as _, Result, bail};
 use async_trait::async_trait;
-use collections::HashMap;
+use collections::{HashMap, HashSet};
 use gpui::AsyncApp;
 use html_to_markdown::{
     HandleTag, HtmlElement, MarkdownWriter, StartTagOutcome, TagHandler, convert_html_to_markdown,
@@ -216,7 +216,7 @@ impl LspAdapter for ResharperLspAdapter {
     /// The backend also reports errors that only follow from an unresolved reference on the same
     /// range (e.g. "Ambiguous invocation" for an unresolved argument), which Rider hides.
     fn process_diagnostics(&self, params: &mut lsp::PublishDiagnosticsParams, _: LanguageServerId) {
-        let unresolved_ranges: Vec<lsp::Range> = params
+        let unresolved_ranges: HashSet<lsp::Range> = params
             .diagnostics
             .iter()
             .filter(|diagnostic| {

@@ -10,6 +10,7 @@ use project::{CodeAction, LocationLink, TaskSourceKind, lsp_store::code_lens::Co
 use settings::{OpenResultsIn, Settings as _};
 use task::TaskContext;
 use text::ToOffset as _;
+use util::ResultExt as _;
 
 use ui::{Context, Window, div, prelude::*};
 
@@ -208,19 +209,21 @@ fn try_show_references(
             .map(|location| editor.compute_target_location(location, server_id, window, cx))
             .collect::<Vec<_>>();
         cx.spawn_in(window, async move |editor, cx| {
+            // A location that fails to resolve must not hide the others.
             let links = join_all(targets)
                 .await
                 .into_iter()
-                .filter_map(|target| target.transpose())
+                .filter_map(|target| target.log_err().flatten())
                 .map(|target| {
-                    target.map(|target| {
-                        HoverLink::Text(LocationLink {
-                            origin: None,
-                            target,
-                        })
+                    HoverLink::Text(LocationLink {
+                        origin: None,
+                        target,
                     })
                 })
-                .collect::<anyhow::Result<Vec<_>>>()?;
+                .collect::<Vec<_>>();
+            if links.is_empty() {
+                return Ok(());
+            }
             editor.update_in(cx, |editor, window, cx| {
                 editor.reveal_clicked_links(
                     GotoDefinitionKind::Symbol,
