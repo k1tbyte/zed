@@ -26,6 +26,7 @@ mod json;
 mod package_json;
 mod python;
 mod resharper;
+mod resharper_debugger;
 mod rust;
 mod tailwind;
 mod tailwindcss;
@@ -265,6 +266,7 @@ pub fn init(languages: Arc<LanguageRegistry>, fs: Arc<dyn Fs>, node: NodeRuntime
         tailwindcss_adapter,
     );
     resharper::register(&languages);
+    resharper_debugger::register(cx);
     languages.register_available_lsp_adapter(
         LanguageServerName("eslint".into()),
         eslint_adapter.clone(),

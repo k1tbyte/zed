@@ -26,6 +26,8 @@ use std::{
 use util::{ResultExt as _, fs::remove_matching};
 
 const UNRESOLVED_SYMBOL_PREFIX: &str = "Cannot resolve symbol";
+pub(crate) const BACKEND: &str = "JetBrains.VsCode.Backend";
+pub(crate) const DEBUGGER_WORKER: &str = "JetBrains.VsCode.Debugger.Worker";
 
 /// Read from `lsp.resharper.settings`.
 #[derive(Default, Deserialize)]
@@ -49,7 +51,7 @@ pub struct BackendArchive {
     directory: String,
 }
 
-fn platform() -> Result<&'static str> {
+pub(crate) fn platform() -> Result<&'static str> {
     Ok(match (consts::OS, consts::ARCH) {
         ("macos", "aarch64") => "macos-arm64",
         ("macos", "x86_64") => "macos-x64",
@@ -61,11 +63,37 @@ fn platform() -> Result<&'static str> {
     })
 }
 
-fn server_binary(version_dir: &Path, platform: &str) -> LanguageServerBinary {
+pub(crate) fn executable_name(name: &str) -> String {
+    format!("{name}{}", consts::EXE_SUFFIX)
+}
+
+pub(crate) fn backend_container_dir() -> PathBuf {
+    paths::languages_dir().join(RESHARPER_SERVER_NAME.0.as_ref())
+}
+
+/// `<version dir>/<platform>`, where the backend executable and the debugger worker live.
+async fn backend_dir(version_dir: &Path) -> Option<PathBuf> {
+    let backend_dir = version_dir.join(platform().ok()?);
+    fs::metadata(backend_dir.join(executable_name(BACKEND)))
+        .await
+        .ok()?;
+    Some(backend_dir)
+}
+
+/// The backend directory of the first installed version in `container_dir`.
+pub(crate) async fn installed_backend_dir(container_dir: &Path) -> Option<PathBuf> {
+    let mut entries = fs::read_dir(container_dir).await.ok()?;
+    while let Some(entry) = entries.next().await {
+        if let Some(backend_dir) = backend_dir(&entry.ok()?.path()).await {
+            return Some(backend_dir);
+        }
+    }
+    None
+}
+
+fn server_binary(backend_dir: &Path) -> LanguageServerBinary {
     LanguageServerBinary {
-        path: version_dir
-            .join(platform)
-            .join(format!("JetBrains.VsCode.Backend{}", consts::EXE_SUFFIX)),
+        path: backend_dir.join(executable_name(BACKEND)),
         arguments: vec![
             format!("--ParentPid={}", std::process::id()).into(),
             "--ClientName=zed".into(),
@@ -110,9 +138,7 @@ fn html_to_markdown(html: &str) -> Result<String> {
 }
 
 async fn installed_binary(version_dir: &Path) -> Option<LanguageServerBinary> {
-    let binary = server_binary(version_dir, platform().ok()?);
-    fs::metadata(&binary.path).await.ok()?;
-    Some(binary)
+    Some(server_binary(&backend_dir(version_dir).await?))
 }
 
 impl LspInstaller for ResharperLspAdapter {
@@ -180,7 +206,7 @@ impl LspInstaller for ResharperLspAdapter {
             )
             .await?;
             remove_matching(&container_dir, |entry| entry != version_dir).await;
-            Ok(server_binary(&version_dir, platform))
+            Ok(server_binary(&version_dir.join(platform)))
         }
     }
 
@@ -189,13 +215,8 @@ impl LspInstaller for ResharperLspAdapter {
         container_dir: PathBuf,
         _: &dyn LspAdapterDelegate,
     ) -> Option<LanguageServerBinary> {
-        let mut entries = fs::read_dir(&container_dir).await.ok()?;
-        while let Some(entry) = entries.next().await {
-            if let Some(binary) = installed_binary(&entry.ok()?.path()).await {
-                return Some(binary);
-            }
-        }
-        None
+        let backend_dir = installed_backend_dir(&container_dir).await?;
+        Some(server_binary(&backend_dir))
     }
 }
 

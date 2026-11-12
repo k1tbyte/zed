@@ -2,7 +2,7 @@
 use gpui::ReadGlobal as _;
 use project::lsp_store::resharper_ext::RESHARPER_SERVER_NAME;
 use serde_json::{Map, Value, json};
-use settings::{ConfiguredLanguageServer, SettingsContent, SettingsStore};
+use settings::{ConfiguredLanguageServer, LspSettings, SettingsContent, SettingsStore};
 
 use crate::{
     PROJECT, SettingField, SettingItem, SettingsFieldMetadata, SettingsPageItem, USER,
@@ -71,6 +71,21 @@ pub(crate) fn csharp_section() -> Box<[SettingsPageItem]> {
                 write: |content, value, _| set_option(content, "sha256", value),
             }),
             metadata: None,
+            files: USER | PROJECT,
+        }),
+        SettingsPageItem::SettingItem(SettingItem {
+            title: "ReSharper Backend Path",
+            description: "Local `JetBrains.VsCode.Backend` executable, used instead of downloading it.",
+            field: Box::new(SettingField {
+                organization_override: None,
+                json_path: Some("lsp.resharper.binary.path"),
+                pick: |content| backend_path(content).or(EMPTY_STRING),
+                write: |content, value, _| set_backend_path(content, value),
+            }),
+            metadata: Some(Box::new(SettingsFieldMetadata {
+                placeholder: Some("/path/to/JetBrains.VsCode.Backend"),
+                ..Default::default()
+            })),
             files: USER | PROJECT,
         }),
     ])
@@ -148,15 +163,43 @@ fn set_option(content: &mut SettingsContent, key: &str, value: Option<String>) {
     };
 }
 
+fn backend_path(content: &SettingsContent) -> Option<&String> {
+    let server = content
+        .project
+        .lsp
+        .0
+        .get(RESHARPER_SERVER_NAME.0.as_ref())?;
+    server.binary.as_ref()?.path.as_ref()
+}
+
+fn set_backend_path(content: &mut SettingsContent, value: Option<String>) {
+    let value = value.filter(|value| !value.is_empty());
+    let Some(server) = server_mut(content, value.is_some()) else {
+        return;
+    };
+    match value {
+        Some(path) => server.binary.get_or_insert_default().path = Some(path),
+        None => {
+            if let Some(binary) = &mut server.binary {
+                binary.path = None;
+            }
+        }
+    }
+}
+
 /// Clearing a value must not create `lsp.resharper` just to remove a key from it.
-fn options_mut(content: &mut SettingsContent, create: bool) -> Option<&mut Map<String, Value>> {
+fn server_mut(content: &mut SettingsContent, create: bool) -> Option<&mut LspSettings> {
     let server_name = RESHARPER_SERVER_NAME;
     let name: &str = &server_name.0;
     let lsp = &mut content.project.lsp.0;
     if create && !lsp.contains_key(name) {
         lsp.insert(name.into(), serde_json::from_value(json!({})).ok()?);
     }
-    let server = lsp.get_mut(name)?;
+    lsp.get_mut(name)
+}
+
+fn options_mut(content: &mut SettingsContent, create: bool) -> Option<&mut Map<String, Value>> {
+    let server = server_mut(content, create)?;
     if create && !matches!(server.settings, Some(Value::Object(_))) {
         server.settings = Some(json!({}));
     }
@@ -257,6 +300,25 @@ mod tests {
     fn test_clearing_an_option_does_not_create_the_server_entry() {
         let mut content = SettingsContent::default();
         set_option(&mut content, "sha256", None);
+        assert!(content.project.lsp.0.is_empty());
+    }
+
+    #[test]
+    fn test_backend_path_round_trip() {
+        let mut content = SettingsContent::default();
+        set_backend_path(&mut content, Some("/b".into()));
+        set_option(&mut content, "sha256", Some("abc".into()));
+        assert_eq!(backend_path(&content).map(String::as_str), Some("/b"));
+        assert_eq!(option(&content, "sha256").map(String::as_str), Some("abc"));
+
+        set_backend_path(&mut content, Some(String::new()));
+        assert_eq!(backend_path(&content), None);
+    }
+
+    #[test]
+    fn test_clearing_backend_path_does_not_create_entry() {
+        let mut content = SettingsContent::default();
+        set_backend_path(&mut content, None);
         assert!(content.project.lsp.0.is_empty());
     }
 }
