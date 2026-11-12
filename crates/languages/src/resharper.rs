@@ -1,12 +1,12 @@
 use anyhow::{Context as _, Result, bail};
 use async_trait::async_trait;
 use collections::{HashMap, HashSet};
+use github_releases::{AssetKind, download_server_binary};
 use gpui::AsyncApp;
 use html_to_markdown::{
     HandleTag, HtmlElement, MarkdownWriter, StartTagOutcome, TagHandler, convert_html_to_markdown,
     markdown,
 };
-use http_client::{github::AssetKind, github_download::download_server_binary};
 use language::{
     CodeLabel, CodeLabelExt as _, Language, LanguageName, LanguageRegistry, LspAdapter,
     LspAdapterDelegate, LspInstaller,
@@ -198,7 +198,8 @@ impl LspInstaller for ResharperLspAdapter {
             let platform = platform()?;
             let version_dir = container_dir.join(&archive.directory);
             download_server_binary(
-                &*delegate.http_client(),
+                delegate.background_executor(),
+                delegate.http_client(),
                 &archive.url,
                 archive.sha256.as_deref(),
                 &version_dir,

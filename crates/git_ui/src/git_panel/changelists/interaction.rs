@@ -6,11 +6,12 @@ use crate::{
 use git::repository::RepoPath;
 use gpui::{
     Action as _, App, Context, MouseButton, MouseDownEvent, Pixels, Point, Render, SharedString,
-    StatefulInteractiveElement, WeakEntity, Window, actions,
+    StatefulInteractiveElement, StyleRefinement, WeakEntity, Window, actions,
 };
 use project::git_store::Repository;
 use theme::ActiveTheme as _;
 use ui::{ContextMenu, IconPosition, prelude::*};
+use workspace::DraggedSelection;
 
 actions!(
     git_panel,
@@ -43,6 +44,15 @@ impl Render for DraggedChangesPreview {
             .bg(colors.elevated_surface_background)
             .child(Label::new(self.0.clone()).size(LabelSize::Small))
     }
+}
+
+fn drop_target_style<T>(
+    style: StyleRefinement,
+    _: &T,
+    _: &mut Window,
+    cx: &mut App,
+) -> StyleRefinement {
+    style.bg(cx.theme().colors().drop_target_background)
 }
 
 type PanelHandle = WeakEntity<GitPanel>;
@@ -96,22 +106,25 @@ impl GitPanel {
         if !self.changelists.is_active() {
             return header;
         }
-        let header = match section {
-            Section::Tracked | Section::New | Section::Changelist(_) => header
-                .drag_over::<DraggedChanges>(|style, _, _, cx| {
-                    style.bg(cx.theme().colors().drop_target_background)
-                })
-                .on_drop(
-                    cx.listener(move |this, dragged: &DraggedChanges, window, cx| {
-                        let list = match section {
-                            Section::Changelist(id) => Some(id),
-                            _ => None,
-                        };
-                        this.assign_changes(this.dragged_paths(dragged), list, window, cx);
-                    }),
-                ),
+        let list = match section {
+            Section::Changelist(id) => Some(id),
+            Section::Tracked | Section::New => None,
             _ => return header,
         };
+        let header = header
+            .drag_over::<DraggedChanges>(drop_target_style)
+            .drag_over::<DraggedSelection>(drop_target_style)
+            .on_drop(
+                cx.listener(move |this, dragged: &DraggedChanges, window, cx| {
+                    this.assign_changes(this.dragged_paths(dragged), list, window, cx);
+                }),
+            )
+            .on_drop(
+                cx.listener(move |this, selection: &DraggedSelection, window, cx| {
+                    let paths = this.selection_paths(selection, cx);
+                    this.assign_changes(paths, list, window, cx);
+                }),
+            );
         match section {
             Section::Changelist(id) => header.on_mouse_down(
                 MouseButton::Right,
@@ -175,6 +188,37 @@ impl GitPanel {
                 .map_or_else(|| only.as_unix_str().to_string(), str::to_string)
                 .into(),
             many => format!("{} files", many.len()).into(),
+        }
+    }
+
+    /// Dragging marked rows moves all marks, deleted files included: the selection leaves
+    /// those out because they have no project entry.
+    pub(in crate::git_panel) fn selection_paths(
+        &self,
+        selection: &DraggedSelection,
+        cx: &App,
+    ) -> Vec<RepoPath> {
+        let Some(repository) = self.active_repository.as_ref() else {
+            return Vec::new();
+        };
+        let (project, repository) = (self.project.read(cx), repository.read(cx));
+        let paths: Vec<RepoPath> = selection
+            .items()
+            .filter_map(|item| {
+                let project_path = project.path_for_entry(item.entry_id, cx)?;
+                repository.project_path_to_repo_path(&project_path, cx)
+            })
+            .collect();
+        let is_marked = |path: &RepoPath| {
+            self.marked_entries
+                .iter()
+                .chain(&self.marked_directories)
+                .any(|key| key.path == *path)
+        };
+        if paths.len() > 1 && paths.iter().all(is_marked) {
+            self.dragged_paths(&DraggedChanges::Marked)
+        } else {
+            paths
         }
     }
 

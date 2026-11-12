@@ -297,6 +297,24 @@ async fn tracked_stays_as_a_drop_target_when_every_file_is_in_a_list(cx: &mut Te
 }
 
 #[gpui::test]
+async fn rows_dragged_as_a_selection_drop_their_files_on_a_list(cx: &mut TestAppContext) {
+    let (_fs, _project, panel, mut cx) = setup(cx, "drag_selection").await;
+    // Rows: 0 Tracked, 1 a.rs, 2 b.rs, 3 c.rs, 4 Untracked, 5 n.txt
+    let dropped = |panel: &GitPanel, ix: usize, cx: &gpui::App| {
+        let entry = panel.entries[ix].status_entry().unwrap().clone();
+        let repo = panel.active_repository.as_ref().unwrap().read(cx);
+        let selection = panel.dragged_selection(ix, &entry, repo, cx).unwrap();
+        panel.selection_paths(&selection, cx)
+    };
+    panel.update_in(&mut cx, |panel, _, cx| {
+        assert_eq!(dropped(panel, 3, cx), [repo_path("c.rs")]);
+        panel.toggle_mark(1, cx);
+        panel.toggle_mark(2, cx);
+        assert_eq!(dropped(panel, 1, cx), [repo_path("a.rs"), repo_path("b.rs")]);
+    });
+}
+
+#[gpui::test]
 async fn dragging_a_marked_row_ignores_the_keyboard_selection(cx: &mut TestAppContext) {
     let (_fs, _project, panel, mut cx) = setup(cx, "drag_payload").await;
     // Rows: 0 Tracked, 1 a.rs, 2 b.rs, 3 c.rs, 4 Untracked, 5 n.txt

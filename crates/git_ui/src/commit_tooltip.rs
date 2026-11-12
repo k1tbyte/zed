@@ -18,7 +18,7 @@ use project::git_store::{Repository, UnshallowState};
 use settings::Settings;
 use std::hash::Hash;
 use theme_settings::ThemeSettings;
-use time::{OffsetDateTime, UtcOffset};
+use time::OffsetDateTime;
 use ui::{Avatar, Chip, CopyButton, Divider, Tooltip, prelude::*, tooltip_container};
 use workspace::Workspace;
 
@@ -220,8 +220,8 @@ pub struct CommitTooltip {
     markdown: Entity<Markdown>,
     repository: Entity<Repository>,
     workspace: WeakEntity<Workspace>,
-    /// Limits the commit view to one file, as the blame entry it was opened for does.
-    file_filter: Option<RepoPath>,
+    /// The commit view opens limited to the blamed file and reveals it.
+    blamed_file: Option<RepoPath>,
 }
 
 impl CommitTooltip {
@@ -256,7 +256,7 @@ impl CommitTooltip {
             workspace,
             cx,
         );
-        tooltip.file_filter = crate::blame_ui::blamed_file(blame);
+        tooltip.blamed_file = crate::blame_ui::blamed_file(blame);
         tooltip
     }
 
@@ -284,7 +284,7 @@ impl CommitTooltip {
             workspace,
             scroll_handle: ScrollHandle::new(),
             markdown,
-            file_filter: None,
+            blamed_file: None,
         }
     }
 }
@@ -304,12 +304,10 @@ impl Render for CommitTooltip {
             .map(|sha| sha.to_string().into())
             .unwrap_or_else(|| self.commit.sha.clone());
         let full_sha = self.commit.sha.to_string();
-        let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
-        let absolute_timestamp = time_format::format_localized_timestamp(
+        let absolute_timestamp = crate::git_timestamp::format_git_timestamp(
             self.commit.commit_time,
-            OffsetDateTime::now_utc(),
-            local_offset,
             time_format::TimestampFormat::MediumAbsolute,
+            cx,
         );
         let markdown_style = {
             let style = hover_markdown_style(window, cx);
@@ -338,7 +336,7 @@ impl Render for CommitTooltip {
         let message_max_height = window.line_height() * 12 + (ui_font_size / 0.4);
         let repo = self.repository.clone();
         let workspace = self.workspace.clone();
-        let file_filter = self.file_filter.clone();
+        let blamed_file = self.blamed_file.clone();
         let commit_summary = CommitSummary {
             sha: self.commit.sha.clone(),
             subject: self
@@ -454,8 +452,9 @@ impl Render for CommitTooltip {
                                                         commit_summary.sha.to_string(),
                                                         repo.downgrade(),
                                                         workspace.clone(),
-                                                        None,
-                                                        file_filter.clone(),
+                                                        crate::blame_ui::blamed_file_options(
+                                                            blamed_file.clone(),
+                                                        ),
                                                         window,
                                                         cx,
                                                     );
@@ -475,23 +474,15 @@ impl Render for CommitTooltip {
     }
 }
 
-fn blame_entry_timestamp(blame_entry: &BlameEntry, format: time_format::TimestampFormat) -> String {
+pub(crate) fn blame_entry_timestamp(
+    blame_entry: &BlameEntry,
+    style: settings::GitDateStyle,
+    cx: &App,
+) -> String {
     match blame_entry.author_offset_date_time() {
-        Ok(timestamp) => {
-            let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
-            time_format::format_localized_timestamp(
-                timestamp,
-                time::OffsetDateTime::now_utc(),
-                local_offset,
-                format,
-            )
-        }
+        Ok(timestamp) => crate::git_timestamp::format_git_date(timestamp, style, cx),
         Err(_) => "Error parsing date".to_string(),
     }
-}
-
-pub fn blame_entry_relative_timestamp(blame_entry: &BlameEntry) -> String {
-    blame_entry_timestamp(blame_entry, time_format::TimestampFormat::Relative)
 }
 
 pub(crate) fn shallow_boundary_notice(

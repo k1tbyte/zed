@@ -1,4 +1,4 @@
-use crate::commit_view::CommitView;
+use crate::commit_view::{CommitView, CommitViewOptions};
 use git::repository::RepoPath;
 use git_ops::{ChangedFile, OutgoingCommit};
 use gpui::{
@@ -187,8 +187,10 @@ impl PushView {
             sha.to_string(),
             self.request.repository.clone(),
             self.request.workspace.clone(),
-            None,
-            RepoPath::new(path).log_err(),
+            CommitViewOptions {
+                file_filter: RepoPath::new(path).log_err(),
+                ..Default::default()
+            },
             window,
             cx,
         );

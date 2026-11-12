@@ -1371,13 +1371,9 @@ impl VisualContext for BenchWindowContext<'_, '_> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        rc::Rc,
-        sync::{
-            Arc,
-            atomic::{AtomicU64, Ordering},
-        },
-    };
+    #[cfg(feature = "test-support")]
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::{rc::Rc, sync::Arc};
 
     use super::*;
     use crate::profiler::journal::install_test_foreground_journal;
@@ -1385,6 +1381,7 @@ mod tests {
     /// Runs `benchmark` under a wall-time primary with a fake counter as the
     /// secondary metric and returns the per-iteration values the report
     /// recorded for it.
+    #[cfg(feature = "test-support")]
     fn secondary_values_per_iteration(
         counter: Arc<AtomicU64>,
         benchmark: impl Fn(&mut BenchAppContext, &Arc<AtomicU64>),
@@ -1426,6 +1423,7 @@ mod tests {
             .collect()
     }
 
+    #[cfg(feature = "test-support")]
     #[test]
     fn secondary_metric_is_normalized_per_iteration_for_bench_iter() {
         let values = secondary_values_per_iteration(Arc::new(AtomicU64::new(0)), |cx, counter| {
@@ -1440,6 +1438,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "test-support")]
     #[test]
     fn secondary_metric_is_accumulated_across_per_iteration_batches() {
         let values = secondary_values_per_iteration(Arc::new(AtomicU64::new(0)), |cx, counter| {

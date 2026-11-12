@@ -30,10 +30,6 @@ impl LayoutSync {
 }
 
 impl GitGraph {
-    fn is_path_history(&self) -> bool {
-        self.log_source.is_path_history()
-    }
-
     fn current_layout(&self, cx: &App) -> Option<Layout> {
         let fractions = self
             .column_widths
@@ -184,8 +180,8 @@ mod tests {
         init_test(cx);
         let mut saved = ViewOptions::default();
         *saved.columns_mut(false) = ColumnLayout {
-            hidden: vec![false, true, false, false, false],
-            fractions: vec![0.2, 0.4, 0.15, 0.15, 0.1],
+            hidden: vec![false, true, false, false, false, false],
+            fractions: vec![0.1, 0.2, 0.3, 0.15, 0.15, 0.1],
         };
         saved.sidebar_width = Some(321.0);
         cx.update(|cx| saved.save_task(cx)).await;
@@ -205,7 +201,7 @@ mod tests {
         graph.update(&mut cx, |graph, cx| {
             graph.toggle_column_visibility(1, cx);
             graph.column_widths.update(cx, |state, cx| {
-                state.restore_fractions(&[0.1, 0.5, 0.1, 0.2, 0.1]);
+                state.restore_fractions(&[0.1, 0.1, 0.4, 0.1, 0.2, 0.1]);
                 cx.notify();
             });
         });
@@ -214,9 +210,9 @@ mod tests {
         let stored = stored_options(&mut cx).await;
         assert_eq!(
             stored.columns(false).hidden,
-            [false, true, false, false, false]
+            [false, true, false, false, false, false]
         );
-        assert_eq!(stored.columns(false).fractions, [0.1, 0.5, 0.1, 0.2, 0.1]);
+        assert_eq!(stored.columns(false).fractions, [0.1, 0.1, 0.4, 0.1, 0.2, 0.1]);
     }
 
     #[gpui::test]
@@ -261,7 +257,7 @@ mod tests {
         let stored = stored_options(&mut cx).await;
         assert_eq!(
             stored.columns(false).hidden,
-            [false, false, true, false, false]
+            [false, false, true, false, false, false]
         );
     }
 }
