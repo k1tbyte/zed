@@ -307,7 +307,8 @@ async fn dragging_a_marked_row_ignores_the_keyboard_selection(cx: &mut TestAppCo
 
     panel.read_with(&cx, |panel, _| {
         let entry = |ix: usize| panel.entries[ix].status_entry().unwrap().clone();
-        assert_eq!(panel.dragged_paths(1, &entry(1)), [repo_path("a.rs")]);
-        assert_eq!(panel.dragged_paths(3, &entry(3)), [repo_path("c.rs")]);
+        let dragged = |ix: usize| panel.dragged_paths(&panel.dragged_file(ix, &entry(ix)));
+        assert_eq!(dragged(1), [repo_path("a.rs")]);
+        assert_eq!(dragged(3), [repo_path("c.rs")]);
     });
 }

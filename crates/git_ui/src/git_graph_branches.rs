@@ -15,7 +15,7 @@ use gpui::{
 };
 use project::git_store::Repository;
 use project::git_store::{GitStore, GitStoreEvent, RepositoryEvent, RepositoryId};
-use std::{collections::HashSet, ops::Range, rc::Rc};
+use std::{collections::HashSet, ops::Range, rc::Rc, sync::Arc};
 use theme::ActiveTheme as _;
 use ui::{
     CommonAnimationExt as _, IndentGuideColors, ListItem, ListItemSpacing, ScrollAxes, Scrollbars,
@@ -48,6 +48,15 @@ pub(crate) struct BranchesSidebar {
     anchor: Option<SharedString>,
     operations: Vec<(usize, SharedString)>,
     next_operation_id: usize,
+    cached_rows: Option<CachedRows>,
+}
+
+/// The tree built from one branch list. Building it sorts and clones every branch, which is
+/// too much for each frame of the operation spinner.
+struct CachedRows {
+    branches: Arc<[Branch]>,
+    rows: Rc<Vec<Row>>,
+    widest_row: Option<usize>,
 }
 
 struct DraggedBranchesResize;
@@ -67,8 +76,9 @@ impl BranchesSidebar {
             editor.set_placeholder_text("Filter branches…", window, cx);
             editor
         });
-        cx.subscribe(&filter_editor, |_, _, event: &EditorEvent, cx| {
+        cx.subscribe(&filter_editor, |this, _, event: &EditorEvent, cx| {
             if matches!(event, EditorEvent::BufferEdited) {
+                this.cached_rows = None;
                 cx.notify();
             }
         })
@@ -99,6 +109,7 @@ impl BranchesSidebar {
             anchor: None,
             operations: Vec::new(),
             next_operation_id: 0,
+            cached_rows: None,
         }
     }
 
@@ -155,20 +166,41 @@ impl BranchesSidebar {
     }
 
     fn select_range_to(&mut self, branch: &Branch, cx: &mut Context<Self>) {
-        let rows = self.rows(cx);
+        let (rows, _) = self.rows(cx);
         if let Some(selected) = refs_between(&rows, self.anchor.as_ref(), &branch.ref_name) {
             self.selected = selected;
             cx.notify();
         }
     }
 
-    fn rows(&self, cx: &App) -> Vec<Row> {
+    /// The rows and the index of the widest one. A new branch list is noticed here, a changed
+    /// filter or folder state drops the cache where it changes.
+    fn rows(&mut self, cx: &App) -> (Rc<Vec<Row>>, Option<usize>) {
         let branches = self
             .repository(cx)
             .map(|repository| repository.read(cx).branch_list.clone())
             .unwrap_or_default();
-        let filter = self.filter_editor.read(cx).text(cx);
-        build_rows(&branches, &filter, &self.collapsed)
+        let cached = self
+            .cached_rows
+            .take()
+            .filter(|cached| Arc::ptr_eq(&cached.branches, &branches))
+            .unwrap_or_else(|| {
+                let filter = self.filter_editor.read(cx).text(cx);
+                let rows = build_rows(&branches, &filter, &self.collapsed);
+                let widest_row = rows
+                    .iter()
+                    .enumerate()
+                    .max_by_key(|(_, row)| row.width_hint())
+                    .map(|(ix, _)| ix);
+                CachedRows {
+                    branches,
+                    rows: Rc::new(rows),
+                    widest_row,
+                }
+            });
+        let rows = (cached.rows.clone(), cached.widest_row);
+        self.cached_rows = Some(cached);
+        rows
     }
 
     fn selected_branches(&self, cx: &App) -> Vec<Branch> {
@@ -188,6 +220,7 @@ impl BranchesSidebar {
         if !self.collapsed.remove(key) {
             self.collapsed.insert(key.clone());
         }
+        self.cached_rows = None;
         cx.notify();
     }
 
@@ -302,13 +335,8 @@ impl BranchesSidebar {
 
 impl Render for BranchesSidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let rows = Rc::new(self.rows(cx));
+        let (rows, widest_row) = self.rows(cx);
         let guide_rows = rows.clone();
-        let widest_row = rows
-            .iter()
-            .enumerate()
-            .max_by_key(|(_, row)| row.width_hint())
-            .map(|(ix, _)| ix);
         let border_color = cx.theme().colors().border;
 
         v_flex()

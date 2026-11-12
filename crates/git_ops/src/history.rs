@@ -67,11 +67,16 @@ pub async fn rewrite(repo: &LocalRepo, request: Rewrite) -> Result<()> {
     std::fs::write(&todo_file, todo(&request, &commits, &message_file))?;
 
     let sequence_editor = format!("cp {}", shell_quote(&todo_file));
-    let mut args = vec!["rebase", "-i", "--autostash"];
-    args.push(base.as_deref().unwrap_or("--root"));
     let envs = [("GIT_SEQUENCE_EDITOR", sequence_editor.as_str())];
+    rebase(repo, &["-i", base.as_deref().unwrap_or("--root")], &envs).await
+}
+
+/// Rebases with an autostash, so a dirty tree does not block it. Callers check `ensure_idle`
+/// first: a rebase that stops on a conflict is rolled back.
+pub(crate) async fn rebase(repo: &LocalRepo, args: &[&str], envs: &[(&str, &str)]) -> Result<()> {
+    let args = [&["rebase", "--autostash"][..], args].concat();
     let stash_before = stash_tip(repo).await;
-    if let Err(error) = git_env(repo, &args, &[], &envs).await {
+    if let Err(error) = git_env(repo, &args, &[], envs).await {
         return Err(undo_if_stopped(repo, "rebase", error).await);
     }
     // Git keeps the autostash when it cannot be reapplied and still exits successfully.
@@ -260,7 +265,7 @@ pub(crate) async fn operation_in_progress(repo: &LocalRepo) -> Result<bool> {
 }
 
 // Also what keeps `undo_if_stopped` from aborting an operation that was not ours.
-async fn ensure_idle(repo: &LocalRepo) -> Result<()> {
+pub(crate) async fn ensure_idle(repo: &LocalRepo) -> Result<()> {
     if operation_in_progress(repo).await? {
         bail!("Finish or abort the rebase, merge, cherry-pick or revert in progress first");
     }

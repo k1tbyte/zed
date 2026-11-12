@@ -241,14 +241,15 @@ fn rebases_the_checked_out_branch_onto_another() -> Result<()> {
 }
 
 #[test]
-fn conflicting_rebase_reports_the_conflict() -> Result<()> {
+fn a_conflicting_rebase_is_rolled_back() -> Result<()> {
     let (temp, default_branch) = repo_with_topic_branch("1\nconflict\n3\n")?;
+    let repo_dir = temp.path();
 
-    let message = smol::block_on(rebase_onto(&repo(temp.path()), &default_branch))
-        .err()
-        .map(|error| error.to_string().to_lowercase())
-        .unwrap_or_default();
-    assert!(message.contains("conflict"), "{message}");
+    let error = smol::block_on(rebase_onto(&repo(repo_dir), &default_branch))
+        .expect_err("the topic branch must conflict");
+
+    assert!(error.to_string().contains("rolled back"), "{error}");
+    assert!(!smol::block_on(operation_in_progress(&repo(repo_dir)))?);
     Ok(())
 }
 

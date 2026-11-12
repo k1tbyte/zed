@@ -1128,98 +1128,18 @@ pub fn init(cx: &mut App) {
                     })
                 },
             )
-            .when_some(
-                resolve_selection_history_target(workspace, window, cx),
-                |div, target| {
-                    let git_store = workspace.project().read(cx).git_store().clone();
-                    let project = workspace.project().clone();
-                    let workspace = workspace.weak_handle();
+            // This runs on every workspace render, so the target is resolved by the action.
+            .when(workspace.active_item_as::<Editor>(cx).is_some(), |div| {
+                let workspace = workspace.weak_handle();
 
-                    div.on_action(move |_: &git::FileHistoryForSelection, window, cx| {
-                        let PendingSelectionHistoryTarget::Ready {
-                            repo_id,
-                            repo_path,
-                            buffer,
-                            source_range,
-                        } = target.clone()
-                        else {
-                            workspace
-                                .update(cx, |workspace, cx| {
-                                    show_selection_history_error(
-                                        workspace,
-                                        SelectionHistoryError::UnsupportedDeletedSelection,
-                                        cx,
-                                    );
-                                })
-                                .ok();
-                            return;
-                        };
-
-                        let load_diff = project.update(cx, |project, cx| {
-                            project.open_uncommitted_diff(buffer.clone(), cx)
-                        });
-                        let workspace = workspace.clone();
-                        let git_store = git_store.clone();
-                        window
-                            .spawn(cx, async move |cx| -> anyhow::Result<()> {
-                                let diff = match load_diff.await {
-                                    Ok(diff) => diff,
-                                    Err(error) => {
-                                        workspace.update(cx, |workspace, cx| {
-                                            show_selection_history_error(
-                                                workspace,
-                                                SelectionHistoryError::DiffLoad(error.to_string()),
-                                                cx,
-                                            );
-                                        })?;
-                                        return Ok(());
-                                    }
-                                };
-
-                                let buffer_snapshot =
-                                    buffer.read_with(cx, |buffer, _| buffer.snapshot());
-                                let diff_snapshot =
-                                    diff.read_with(cx, |diff, cx| diff.snapshot(cx));
-                                let projection = project_selection_history_to_head(
-                                    source_range,
-                                    &buffer_snapshot,
-                                    &diff_snapshot,
-                                );
-
-                                workspace.update_in(
-                                    cx,
-                                    |workspace, window, cx| match projection {
-                                        SelectionHistoryProjection::Mapped {
-                                            start_line,
-                                            end_line,
-                                        } => open_or_reuse_graph(
-                                            workspace,
-                                            repo_id,
-                                            git_store,
-                                            LogSource::Selection {
-                                                path: repo_path,
-                                                start_line,
-                                                end_line,
-                                            },
-                                            None,
-                                            window,
-                                            cx,
-                                        ),
-                                        SelectionHistoryProjection::NoCommittedLines => {
-                                            show_selection_history_error(
-                                                workspace,
-                                                SelectionHistoryError::NoCommittedLines,
-                                                cx,
-                                            );
-                                        }
-                                    },
-                                )?;
-                                Ok(())
-                            })
-                            .detach();
-                    })
-                },
-            )
+                div.on_action(move |_: &git::FileHistoryForSelection, window, cx| {
+                    workspace
+                        .update(cx, |workspace, cx| {
+                            open_selection_history(workspace, window, cx)
+                        })
+                        .ok();
+                })
+            })
             .when(
                 workspace.project().read(cx).active_repository(cx).is_some(),
                 |div| {
@@ -1368,6 +1288,85 @@ fn resolve_selection_history_target(
         buffer: source_buffer,
         source_range,
     })
+}
+
+fn open_selection_history(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let (repo_id, repo_path, buffer, source_range) =
+        match resolve_selection_history_target(workspace, window, cx) {
+            Some(PendingSelectionHistoryTarget::Ready {
+                repo_id,
+                repo_path,
+                buffer,
+                source_range,
+            }) => (repo_id, repo_path, buffer, source_range),
+            target => {
+                // A file outside of a repository has no committed lines either.
+                let error = match target {
+                    Some(_) => SelectionHistoryError::UnsupportedDeletedSelection,
+                    None => SelectionHistoryError::NoCommittedLines,
+                };
+                show_selection_history_error(workspace, error, cx);
+                return;
+            }
+        };
+
+    let project = workspace.project().clone();
+    let git_store = project.read(cx).git_store().clone();
+    let load_diff = project.update(cx, |project, cx| {
+        project.open_uncommitted_diff(buffer.clone(), cx)
+    });
+    cx.spawn_in(window, async move |workspace, cx| -> anyhow::Result<()> {
+        let diff = match load_diff.await {
+            Ok(diff) => diff,
+            Err(error) => {
+                workspace.update(cx, |workspace, cx| {
+                    show_selection_history_error(
+                        workspace,
+                        SelectionHistoryError::DiffLoad(error.to_string()),
+                        cx,
+                    );
+                })?;
+                return Ok(());
+            }
+        };
+
+        let buffer_snapshot = buffer.read_with(cx, |buffer, _| buffer.snapshot());
+        let diff_snapshot = diff.read_with(cx, |diff, cx| diff.snapshot(cx));
+        let projection =
+            project_selection_history_to_head(source_range, &buffer_snapshot, &diff_snapshot);
+
+        workspace.update_in(cx, |workspace, window, cx| match projection {
+            SelectionHistoryProjection::Mapped {
+                start_line,
+                end_line,
+            } => open_or_reuse_graph(
+                workspace,
+                repo_id,
+                git_store,
+                LogSource::Selection {
+                    path: repo_path,
+                    start_line,
+                    end_line,
+                },
+                None,
+                window,
+                cx,
+            ),
+            SelectionHistoryProjection::NoCommittedLines => {
+                show_selection_history_error(
+                    workspace,
+                    SelectionHistoryError::NoCommittedLines,
+                    cx,
+                );
+            }
+        })?;
+        Ok(())
+    })
+    .detach();
 }
 
 pub fn open_or_reuse_graph(

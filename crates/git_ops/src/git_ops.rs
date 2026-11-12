@@ -93,10 +93,9 @@ pub async fn fetch_branch(repo: &LocalRepo, remote: &str, branch: &str) -> Resul
     Ok(())
 }
 
-// Autostash so a dirty tree does not block the rebase; git restores the changes afterwards.
 pub async fn rebase_onto(repo: &LocalRepo, onto: &str) -> Result<()> {
-    git(repo, &["rebase", "--autostash", onto], &[]).await?;
-    Ok(())
+    history::ensure_idle(repo).await?;
+    history::rebase(repo, &[onto], &[]).await
 }
 
 // Remotes without fetched branches are missing from the branch list, so ask git.

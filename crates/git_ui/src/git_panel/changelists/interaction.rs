@@ -1,6 +1,6 @@
 use super::ChangelistId;
 use crate::{
-    git_panel::{GitHeaderEntry, GitPanel, GitStatusEntry, GitTreeDirEntry, Section},
+    git_panel::{GitHeaderEntry, GitPanel, GitStatusEntry, GitTreeDirEntry, Section, TreeKey},
     git_text_modal::TextModal,
 };
 use git::repository::RepoPath;
@@ -20,10 +20,13 @@ actions!(
     ]
 );
 
-/// What a drag from the changes list carries.
-struct DraggedChanges {
-    paths: Vec<RepoPath>,
-    label: SharedString,
+/// What a drag from the changes list carries. Rows are rebuilt every frame, so the paths are
+/// collected only when the drag starts or lands.
+pub(in crate::git_panel) enum DraggedChanges {
+    /// The dragged row is part of the marks, so all of them move.
+    Marked,
+    File(RepoPath),
+    Directory(TreeKey),
 }
 
 struct DraggedChangesPreview(SharedString);
@@ -104,7 +107,7 @@ impl GitPanel {
                             Section::Changelist(id) => Some(id),
                             _ => None,
                         };
-                        this.assign_changes(dragged.paths.clone(), list, window, cx);
+                        this.assign_changes(this.dragged_paths(dragged), list, window, cx);
                     }),
                 ),
             _ => return header,
@@ -121,63 +124,78 @@ impl GitPanel {
         }
     }
 
-    /// Makes a row draggable onto a list header. `paths` is what the drag moves.
+    /// The row's file, or everything marked when the row is part of the marks.
+    pub(in crate::git_panel) fn dragged_file(
+        &self,
+        ix: usize,
+        entry: &GitStatusEntry,
+    ) -> DraggedChanges {
+        if self.row_is_marked(ix) {
+            DraggedChanges::Marked
+        } else {
+            DraggedChanges::File(entry.repo_path.clone())
+        }
+    }
+
+    /// Everything under the folder, or everything marked when the folder is part of the marks.
+    pub(in crate::git_panel) fn dragged_directory(
+        &self,
+        directory: &GitTreeDirEntry,
+    ) -> DraggedChanges {
+        if self.marked_directories.contains(&directory.key) {
+            DraggedChanges::Marked
+        } else {
+            DraggedChanges::Directory(directory.key.clone())
+        }
+    }
+
+    /// Makes a row draggable onto a list header.
     pub(in crate::git_panel) fn changelist_drag_source<E: StatefulInteractiveElement>(
         &self,
         row: E,
-        paths: Vec<RepoPath>,
+        dragged: DraggedChanges,
+        cx: &Context<Self>,
     ) -> E {
-        if !self.changelists.is_active() || paths.is_empty() {
+        if !self.changelists.is_active() {
             return row;
         }
-        let label: SharedString = match paths.as_slice() {
+        let panel = cx.weak_entity();
+        row.on_drag(dragged, move |dragged, _, _, cx| {
+            let label = panel
+                .read_with(cx, |panel, _| panel.drag_label(dragged))
+                .unwrap_or_default();
+            cx.new(|_| DraggedChangesPreview(label))
+        })
+    }
+
+    fn drag_label(&self, dragged: &DraggedChanges) -> SharedString {
+        match self.dragged_paths(dragged).as_slice() {
             [only] => only
                 .file_name()
                 .map_or_else(|| only.as_unix_str().to_string(), str::to_string)
                 .into(),
             many => format!("{} files", many.len()).into(),
-        };
-        row.on_drag(DraggedChanges { paths, label }, |dragged, _, _, cx| {
-            cx.new(|_| DraggedChangesPreview(dragged.label.clone()))
-        })
-    }
-
-    /// Not `effective_status_entries`: that prefers the keyboard selection over a lone mark.
-    fn marked_paths(&self) -> Vec<RepoPath> {
-        self.marked_file_entries()
-            .into_iter()
-            .map(|entry| entry.repo_path)
-            .collect()
-    }
-
-    /// The row's file, or everything marked when the row is part of the marks.
-    pub(in crate::git_panel) fn dragged_paths(
-        &self,
-        ix: usize,
-        entry: &GitStatusEntry,
-    ) -> Vec<RepoPath> {
-        if self.row_is_marked(ix) {
-            self.marked_paths()
-        } else {
-            vec![entry.repo_path.clone()]
         }
     }
 
-    /// Everything under the folder, or everything marked when the folder is part of the marks.
-    pub(in crate::git_panel) fn dragged_directory_paths(
-        &self,
-        directory: &GitTreeDirEntry,
-    ) -> Vec<RepoPath> {
-        if self.marked_directories.contains(&directory.key) {
-            return self.marked_paths();
+    pub(in crate::git_panel) fn dragged_paths(&self, dragged: &DraggedChanges) -> Vec<RepoPath> {
+        match dragged {
+            // Not `effective_status_entries`: that prefers the keyboard selection over a lone mark.
+            DraggedChanges::Marked => self
+                .marked_file_entries()
+                .into_iter()
+                .map(|entry| entry.repo_path)
+                .collect(),
+            DraggedChanges::File(path) => vec![path.clone()],
+            DraggedChanges::Directory(key) => self
+                .view_mode
+                .tree_state()
+                .and_then(|state| state.directory_descendants.get(key))
+                .into_iter()
+                .flatten()
+                .map(|entry| entry.repo_path.clone())
+                .collect(),
         }
-        self.view_mode
-            .tree_state()
-            .and_then(|state| state.directory_descendants.get(&directory.key))
-            .into_iter()
-            .flatten()
-            .map(|entry| entry.repo_path.clone())
-            .collect()
     }
 
     pub(in crate::git_panel) fn assign_changes(

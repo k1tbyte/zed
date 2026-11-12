@@ -106,7 +106,7 @@ impl ChangelistState {
             .cached_status()
             .map(|entry| entry.repo_path)
             .collect();
-        // An empty status is indistinguishable from "not scanned yet", so it never prunes.
+        // An empty status also means "not scanned yet" or a failed `git status`, so it never prunes.
         if !changed.is_empty() && self.model.has_stale(&changed) {
             self.model = store::update(&key, cx, |model| model.prune(&changed)).0;
         }

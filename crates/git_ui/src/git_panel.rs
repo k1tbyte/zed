@@ -9131,7 +9131,7 @@ impl GitPanel {
                     cx.stop_propagation();
                 },
             )
-            .map(|row| self.changelist_drag_source(row, self.dragged_paths(ix, entry)))
+            .map(|row| self.changelist_drag_source(row, self.dragged_file(ix, entry), cx))
             .into_any_element()
     }
 
@@ -9322,7 +9322,7 @@ impl GitPanel {
                     this.deploy_entry_context_menu(event.position, ix, window, cx);
                 }),
             )
-            .map(|row| self.changelist_drag_source(row, self.dragged_directory_paths(entry)))
+            .map(|row| self.changelist_drag_source(row, self.dragged_directory(entry), cx))
             .into_any_element()
     }
 
