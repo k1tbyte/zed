@@ -1,7 +1,8 @@
-use super::{BranchesSidebar, operations::fetch_target};
+use super::BranchesSidebar;
+use crate::git_job::fetch_target;
 use git::repository::Branch;
-use gpui::{App, ClipboardItem, Context, Entity, SharedString, WeakEntity, Window};
-use ui::{ContextMenu, prelude::*};
+use gpui::{Anchor, App, ClipboardItem, Context, Entity, SharedString, WeakEntity, Window};
+use ui::{ContextMenu, PopoverMenu, Tooltip, prelude::*};
 
 const MENU_NAME_LIMIT: usize = 28;
 
@@ -101,10 +102,10 @@ pub(super) fn branch_context_menu(
             operation_entry(menu, "Rename…".into(), BranchesSidebar::rename)
         })
         .when(!branch.is_head, |menu| {
-            let label = if is_remote {
-                "Delete Local Tracking Branch"
-            } else {
-                "Delete"
+            let label = match (is_remote, can_fetch) {
+                (false, _) => "Delete",
+                (true, true) => "Delete from Remote…",
+                (true, false) => "Delete Local Tracking Branch",
             };
             operation_entry(menu, label.into(), BranchesSidebar::delete)
         })
@@ -113,6 +114,41 @@ pub(super) fn branch_context_menu(
             cx.write_to_clipboard(ClipboardItem::new_string(name.clone()));
         })
     })
+}
+
+pub(super) fn cleanup_menu(sidebar: WeakEntity<BranchesSidebar>) -> impl IntoElement {
+    PopoverMenu::new("git-graph-branches-cleanup")
+        .trigger_with_tooltip(
+            IconButton::new("git-graph-branches-cleanup-trigger", IconName::Ellipsis)
+                .icon_size(IconSize::Small),
+            Tooltip::text("Clean Up Branches"),
+        )
+        .menu(move |window, cx| {
+            let sidebar = sidebar.clone();
+            Some(ContextMenu::build(window, cx, move |menu, _, _| {
+                type Operation =
+                    fn(&mut BranchesSidebar, &mut Window, &mut Context<BranchesSidebar>);
+                let entry = |menu: ContextMenu, label: &'static str, operation: Operation| {
+                    let sidebar = sidebar.clone();
+                    menu.entry(label, None, move |window, cx| {
+                        sidebar
+                            .update(cx, |sidebar, cx| operation(sidebar, window, cx))
+                            .ok();
+                    })
+                };
+                let menu = entry(
+                    menu,
+                    "Prune Remote Branches",
+                    BranchesSidebar::prune_remote_branches,
+                );
+                entry(
+                    menu,
+                    "Delete Merged Branches…",
+                    BranchesSidebar::delete_merged_branches,
+                )
+            }))
+        })
+        .anchor(Anchor::TopRight)
 }
 
 // Keeps both ends of a long name: the prefix and the ticket id at the end matter most.

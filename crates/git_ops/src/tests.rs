@@ -1,3 +1,4 @@
+mod branches;
 mod history;
 
 use super::*;
@@ -171,6 +172,7 @@ fn fast_forwards_a_branch_that_is_not_checked_out() -> Result<()> {
         "origin",
         "feature",
         false,
+        UpdateOptions::default(),
     ))?;
     assert_eq!(
         run(&local, &["rev-parse", "feature"])?,
@@ -210,6 +212,7 @@ fn refuses_to_update_a_diverged_branch() -> Result<()> {
         "origin",
         "feature",
         false,
+        UpdateOptions::default(),
     ));
     assert!(result.is_err());
     assert_eq!(run(&local, &["rev-parse", "feature"])?, before);
@@ -357,6 +360,7 @@ fn updates_the_branch_even_when_a_tag_shares_its_name() -> Result<()> {
         "origin",
         "feature",
         false,
+        UpdateOptions::default(),
     ))?;
     assert_eq!(
         run(&local, &["rev-parse", "refs/heads/feature"])?,

@@ -66,15 +66,63 @@ pub async fn apply_commit_file(
         .map_err(|three_way_error| anyhow!("{plain_error}\n{three_way_error}"))
 }
 
+/// Why git refused, when the user can get past it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Blocker {
+    LocalChanges,
+    Diverged,
+}
+
+pub fn blocker(error: &anyhow::Error) -> Option<Blocker> {
+    let message = format!("{error:#}");
+    if message.contains("Your local changes to the following files would be overwritten")
+        || message.contains("cannot pull with rebase")
+    {
+        Some(Blocker::LocalChanges)
+    } else if message.contains("Need to specify how to reconcile divergent branches")
+        || message.contains("Not possible to fast-forward")
+    {
+        Some(Blocker::Diverged)
+    } else {
+        None
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UpdateOptions {
+    pub autostash: bool,
+    pub reconcile: Option<Reconcile>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reconcile {
+    Merge,
+    Rebase,
+}
+
 pub async fn update_branch(
     repo: &LocalRepo,
     branch: &str,
     remote: &str,
     remote_branch: &str,
     is_checked_out: bool,
+    options: UpdateOptions,
 ) -> Result<()> {
     if is_checked_out {
-        git(repo, &["pull"], &[]).await?;
+        let mut args = vec!["pull"];
+        if options.autostash {
+            args.push("--autostash");
+        }
+        match options.reconcile {
+            // `--ff` overrides a configured `pull.ff=only`.
+            Some(Reconcile::Merge) => args.extend(["--no-rebase", "--ff"]),
+            Some(Reconcile::Rebase) => args.push("--rebase"),
+            None => {}
+        }
+        // Named explicitly so a branch without an upstream can be pulled too.
+        let source = format!("refs/heads/{remote_branch}");
+        args.extend([remote, &source]);
+        git(repo, &args, &[]).await?;
     } else {
         // Full refs keep a same-named tag from winning. No leading `+`, so anything but a
         // fast-forward is refused and local commits stay safe.
@@ -82,6 +130,94 @@ pub async fn update_branch(
         git(repo, &["fetch", remote, &refspec], &[]).await?;
     }
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocalChanges {
+    Refuse,
+    Keep,
+    Discard,
+}
+
+pub async fn checkout_branch(
+    repo: &LocalRepo,
+    branch: &str,
+    local_changes: LocalChanges,
+) -> Result<()> {
+    match local_changes {
+        LocalChanges::Refuse => git(repo, &["switch", branch], &[]).await.map(drop),
+        LocalChanges::Discard => git(repo, &["switch", "--discard-changes", branch], &[])
+            .await
+            .map(drop),
+        LocalChanges::Keep => switch_keeping_changes(repo, branch).await,
+    }
+}
+
+async fn switch_keeping_changes(repo: &LocalRepo, branch: &str) -> Result<()> {
+    let stash_before = stash_head(repo).await;
+    let message = format!("Checkout {branch}");
+    git(repo, &["stash", "push", "--message", &message], &[]).await?;
+    // Nothing to save still exits 0, so compare to avoid popping an older stash.
+    let stashed = stash_head(repo).await != stash_before;
+
+    if let Err(switch_error) = git(repo, &["switch", branch], &[]).await {
+        if stashed && let Err(pop_error) = git(repo, &["stash", "pop"], &[]).await {
+            return Err(switch_error.context(format!("Restoring the stash failed: {pop_error}")));
+        }
+        return Err(switch_error);
+    }
+    if stashed {
+        git(repo, &["stash", "pop"], &[]).await.context(format!(
+            "Checked out {branch}, but the stashed changes conflict with it. They are kept in the stash."
+        ))?;
+    }
+    Ok(())
+}
+
+async fn stash_head(repo: &LocalRepo) -> Option<String> {
+    let output = git(repo, &["rev-parse", "-q", "--verify", "refs/stash"], &[])
+        .await
+        .ok()?;
+    Some(String::from_utf8_lossy(&output).trim().to_string())
+}
+
+pub async fn delete_remote_branch(repo: &LocalRepo, remote: &str, branch: &str) -> Result<()> {
+    let full_ref = format!("refs/heads/{branch}");
+    match git(repo, &["push", remote, "--delete", &full_ref], &[]).await {
+        Ok(_) => Ok(()),
+        Err(error) if error.to_string().contains("remote ref does not exist") => {
+            // Already gone on the remote, so only the stale tracking ref is left.
+            let tracking = format!("{remote}/{branch}");
+            git(repo, &["branch", "-d", "-r", &tracking], &[]).await?;
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+pub async fn prune_remote_branches(repo: &LocalRepo) -> Result<()> {
+    git(repo, &["fetch", "--all", "--prune"], &[]).await?;
+    Ok(())
+}
+
+/// Returns full ref names such as `refs/heads/topic`.
+pub async fn merged_branches(repo: &LocalRepo, target: &str) -> Result<Vec<String>> {
+    let merged = format!("--merged={target}");
+    let output = git(
+        repo,
+        &[
+            "for-each-ref",
+            &merged,
+            "--format=%(refname)",
+            "refs/heads/",
+        ],
+        &[],
+    )
+    .await?;
+    Ok(String::from_utf8_lossy(&output)
+        .lines()
+        .map(str::to_string)
+        .collect())
 }
 
 // Refreshes only this branch's remote-tracking ref, not everything the remote has.

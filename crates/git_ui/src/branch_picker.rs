@@ -1611,11 +1611,21 @@ impl PickerDelegate for BranchListDelegate {
                 };
 
                 let branch = branch.clone();
-                cx.spawn(async move |_, cx| {
-                    repo.update(cx, |repo, _| repo.change_branch(branch.name().to_string()))
-                        .await??;
-
-                    anyhow::Ok(())
+                let workspace = self.workspace.clone();
+                cx.spawn_in(window, async move |_, cx| {
+                    let result = repo
+                        .update(cx, |repo, _| repo.change_branch(branch.name().to_string()))
+                        .await?;
+                    if let Err(error) = &result
+                        && cx.update(|window, cx| {
+                            crate::git_job::recover_checkout(
+                                error, workspace, &repo, &branch, window, cx,
+                            )
+                        })?
+                    {
+                        return Ok(());
+                    }
+                    result
                 })
                 .detach_and_prompt_err(
                     "Failed to change branch",

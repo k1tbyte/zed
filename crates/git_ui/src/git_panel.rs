@@ -23,8 +23,8 @@ use crate::{
 use agent_settings::{AgentSettings, UserAgentsMd};
 use anyhow::Context as _;
 use askpass::AskPassDelegate;
-use changelists::{ChangelistId, ChangelistState, NewChangelist};
 use branch_mode::{BranchBase, ChangesMode};
+use changelists::{ChangelistId, ChangelistState, NewChangelist};
 use client::zed_urls;
 use collections::{BTreeMap, HashMap, HashSet};
 use db::kvp::KeyValueStore;
@@ -5211,12 +5211,24 @@ impl GitPanel {
 
             let remote_message = pull.await?;
 
+            let remote_name = remote.name.clone();
             let action = RemoteAction::Pull(remote);
-            this.update(cx, |this, cx| match remote_message {
+            this.update_in(cx, |this, window, cx| match remote_message {
                 Ok(remote_message) => this.show_remote_output(action, remote_message, cx),
                 Err(e) => {
                     log::error!("Error while pulling {:?}", e);
-                    this.show_error_toast(action.name(), e, cx)
+                    let workspace = this.workspace.clone();
+                    if !crate::git_job::recover_pull(
+                        &e,
+                        workspace,
+                        &repo,
+                        &remote_name,
+                        rebase,
+                        window,
+                        cx,
+                    ) {
+                        this.show_error_toast(action.name(), e, cx)
+                    }
                 }
             })
             .ok();

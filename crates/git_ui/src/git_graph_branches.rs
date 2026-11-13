@@ -1,11 +1,13 @@
+mod cleanup;
 mod menu;
 mod operations;
 mod tree;
 
-pub(crate) use self::operations::{GitOperation, new_branch_from_ref};
+pub(crate) use self::operations::new_branch_from_ref;
 
-use self::menu::branch_context_menu;
+use self::menu::{branch_context_menu, cleanup_menu};
 use self::tree::{Row, build_rows, refs_between};
+use crate::git_job::{JobContext, RunningJobs};
 use editor::{Editor, EditorEvent};
 use git::repository::{Branch, LogSource, UpstreamTrackingStatus};
 use gpui::{
@@ -46,8 +48,7 @@ pub(crate) struct BranchesSidebar {
     width: Pixels,
     selected: HashSet<SharedString>,
     anchor: Option<SharedString>,
-    operations: Vec<(usize, SharedString)>,
-    next_operation_id: usize,
+    running: Entity<RunningJobs>,
     cached_rows: Option<CachedRows>,
 }
 
@@ -95,6 +96,8 @@ impl BranchesSidebar {
             }
         })
         .detach();
+        let running = cx.new(|_| RunningJobs::default());
+        cx.observe(&running, |_, _, cx| cx.notify()).detach();
 
         Self {
             repo_id,
@@ -107,9 +110,16 @@ impl BranchesSidebar {
             width: DEFAULT_WIDTH,
             selected: HashSet::new(),
             anchor: None,
-            operations: Vec::new(),
-            next_operation_id: 0,
+            running,
             cached_rows: None,
+        }
+    }
+
+    fn job_context(&self, repository: Entity<Repository>) -> JobContext {
+        JobContext {
+            workspace: self.workspace.clone(),
+            repository,
+            running: Some(self.running.clone()),
         }
     }
 
@@ -386,7 +396,10 @@ impl Render for BranchesSidebar {
                             .size(IconSize::Small)
                             .color(Color::Muted),
                     )
-                    .child(div().flex_1().child(self.filter_editor.clone())),
+                    .child(div().flex_1().child(self.filter_editor.clone()))
+                    .when(self.is_local(cx), |this| {
+                        this.child(cleanup_menu(cx.weak_entity()))
+                    }),
             )
             .child(
                 div()
@@ -428,13 +441,7 @@ impl Render for BranchesSidebar {
                         cx,
                     ),
             )
-            .when_some(self.operations.first(), |this, (_, first)| {
-                let more = self.operations.len() - 1;
-                let label = if more > 0 {
-                    format!("{first} (+{more} more)")
-                } else {
-                    first.to_string()
-                };
+            .when_some(self.running.read(cx).label(), |this, label| {
                 this.child(
                     h_flex()
                         .px_2()

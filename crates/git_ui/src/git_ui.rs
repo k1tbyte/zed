@@ -51,6 +51,7 @@ pub mod git_graph_panel;
 mod git_graph_push;
 mod git_graph_selection_history;
 mod git_graph_view_options;
+mod git_job;
 pub mod git_panel;
 mod git_panel_settings;
 pub mod git_picker;

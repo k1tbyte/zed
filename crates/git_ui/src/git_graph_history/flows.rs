@@ -1,7 +1,6 @@
 use super::HistoryTarget;
 use crate::{
-    git_graph_branches::{GitOperation, new_branch_from_ref},
-    git_text_modal::TextModal,
+    git_graph_branches::new_branch_from_ref, git_job::GitOperation, git_text_modal::TextModal,
 };
 use anyhow::anyhow;
 use git::repository::ResetMode;
