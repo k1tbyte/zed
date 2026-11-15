@@ -248,6 +248,9 @@ pub struct SettingsContent {
 
     pub repl: Option<ReplSettingsContent>,
 
+    /// The settings for the sops secrets editor.
+    pub sops: Option<SopsSettingsContent>,
+
     /// Whether or not to enable Helix mode.
     ///
     /// Default: false
@@ -413,7 +416,7 @@ fallible_options::flattened_deserialize!(SettingsContent {
         journal, log, line_indicator_format, language_models, copilot, outline_panel, project_panel,
         node, proxy, reduce_motion, server_url, credentials_url, session, telemetry, terminal,
         title_bar, vim_mode, calls, which_key, vim, modeline_lines, feature_flags,
-        instrumentation,
+        instrumentation, sops,
     },
     defaults: {},
 });
@@ -1384,6 +1387,21 @@ pub struct MarkdownPreviewSettingsContent {
 }
 
 /// The settings for the image viewer.
+/// The settings for the sops secrets editor.
+#[with_fallible_options]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, Default, PartialEq)]
+pub struct SopsSettingsContent {
+    /// Worktree-relative path patterns of sops files to open in the secrets editor.
+    /// `**/` matches any directories, `*` part of a name, `{env}` the environment name.
+    /// Files that differ only by `{env}` are shown together. First match wins.
+    pub file_patterns: Option<Vec<String>>,
+    /// Extra age identity files, used on top of `$SOPS_AGE_KEY_FILE` or the sops default.
+    /// Passphrase-protected files are unlocked with a prompt.
+    ///
+    /// Default: []
+    pub age_key_files: Option<Vec<String>>,
+}
+
 #[with_fallible_options]
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, Default, PartialEq)]
 pub struct ImageViewerSettingsContent {

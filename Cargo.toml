@@ -192,6 +192,7 @@ members = [
     "crates/scheduler",
     "crates/schema_generator",
     "crates/search",
+    "crates/secrets_editor",
     "crates/session",
     "crates/settings",
     "crates/settings_content",
@@ -469,6 +470,7 @@ rpc = { path = "crates/rpc" }
 sandbox = { path = "crates/sandbox" }
 scheduler = { path = "crates/scheduler" }
 search = { path = "crates/search" }
+secrets_editor = { path = "crates/secrets_editor" }
 session = { path = "crates/session" }
 settings = { path = "crates/settings" }
 settings_content = { path = "crates/settings_content" }
@@ -538,6 +540,7 @@ accesskit = { version = "0.24.0", features = ["enumn"] }
 accesskit_macos = "0.26.0"
 accesskit_unix = "0.22"
 accesskit_windows = "0.34"
+age = { version = "0.12", default-features = false }
 agent-client-protocol = { version = "=5.1.0", features = ["schemars", "unstable", "unstable_protocol_v2"] }
 aho-corasick = "1.1"
 alacritty_terminal = { git = "https://github.com/zed-industries/alacritty", rev = "4c129667ce56611becdc82de6e28218c80e2e88f" }

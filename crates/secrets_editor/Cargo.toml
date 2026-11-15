@@ -1,0 +1,43 @@
+[package]
+name = "secrets_editor"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/secrets_editor.rs"
+doctest = false
+
+[dependencies]
+age = { workspace = true, features = ["armor"] }
+anyhow.workspace = true
+collections.workspace = true
+credentials_provider.workspace = true
+editor.workspace = true
+fs.workspace = true
+futures.workspace = true
+gpui.workspace = true
+log.workspace = true
+menu.workspace = true
+paths.workspace = true
+project.workspace = true
+regex.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+settings.workspace = true
+shellexpand.workspace = true
+ui.workspace = true
+util.workspace = true
+workspace.workspace = true
+zed_credentials_provider.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+project = { workspace = true, features = ["test-support"] }
+settings = { workspace = true, features = ["test-support"] }
+workspace = { workspace = true, features = ["test-support"] }

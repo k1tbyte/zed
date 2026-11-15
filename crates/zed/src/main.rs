@@ -731,6 +731,7 @@ fn main() {
 
         editor::init(cx);
         image_viewer::init(cx);
+        secrets_editor::init(cx);
         repl::notebook::init(cx);
         diagnostics::init(cx);
 

@@ -113,6 +113,17 @@
     // The unit for image file sizes: "binary" (KiB, MiB) or decimal (KB, MB)
     "unit": "binary",
   },
+  // Sops secrets editor settings
+  "sops": {
+    // Sops files (.yaml, .yml, .json, .env) opened in the secrets editor; `{env}` groups environments.
+    "file_patterns": [
+      "**/*.{env}.sops.*",
+      "**/{env}/*.sops.*",
+      "**/*.sops.*",
+    ],
+    // Extra age identity files, on top of $SOPS_AGE_KEY_FILE or the sops default location.
+    "age_key_files": [],
+  },
   // Markdown preview settings
   "markdown_preview": {
     // The default font size for the markdown preview. Falls back to the UI font size if unset.
